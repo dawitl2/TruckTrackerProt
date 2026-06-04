@@ -45,6 +45,11 @@ function normalizePlate(value) {
   return String(value || "").trim().toUpperCase();
 }
 
+function formatPlateLabel(value) {
+  const plate = normalizePlate(value);
+  return plate.split("/")[0] || plate;
+}
+
 function formatExtractionDate(date = new Date()) {
   return new Intl.DateTimeFormat("en-CA").format(date);
 }
@@ -75,11 +80,16 @@ function parseRows(matrix, extractionDate, extractionTime) {
       company: String(row[4] || "").trim()
     }));
 
-  const targetRows = TARGET_LICENSE_PLATES.map((plate) => {
+  const targetRows = TARGET_LICENSE_PLATES.flatMap((plate) => {
     const targetPlate = normalizePlate(plate);
 
-    return rows.find((row) => normalizePlate(row.license_plate) === targetPlate) || null;
-  }).filter(Boolean);
+    return rows
+      .filter((row) => normalizePlate(row.license_plate) === targetPlate)
+      .map((row) => ({
+        ...row,
+        target_plate: targetPlate
+      }));
+  });
 
   return {
     rows,
@@ -136,6 +146,9 @@ function App() {
   const [selectedPlate, setSelectedPlate] = useState(TARGET_LICENSE_PLATES[0]);
   const [targetRows, setTargetRows] = useState([]);
   const [saveComplete, setSaveComplete] = useState(false);
+  const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
+  const [showTopButton, setShowTopButton] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
@@ -174,8 +187,42 @@ function App() {
     });
   }, []);
 
+  useEffect(() => {
+    const updateViewport = () => {
+      setIsMobile(window.innerWidth <= 720);
+    };
+
+    const updateScroll = () => {
+      setShowTopButton(window.scrollY > 280);
+    };
+
+    updateViewport();
+    updateScroll();
+
+    window.addEventListener("resize", updateViewport);
+    window.addEventListener("scroll", updateScroll, { passive: true });
+
+    return () => {
+      window.removeEventListener("resize", updateViewport);
+      window.removeEventListener("scroll", updateScroll);
+    };
+  }, []);
+
   const openFilePicker = () => {
     fileInputRef.current?.click();
+  };
+
+  const handlePrimaryAction = () => {
+    if (isMobile) {
+      setMobileSheetOpen((current) => !current);
+      return;
+    }
+
+    openFilePicker();
+  };
+
+  const closeMobileSheet = () => {
+    setMobileSheetOpen(false);
   };
 
   const handleFileSelected = async (nextFile) => {
@@ -269,6 +316,16 @@ function App() {
 
   const visibleRows = savedRows.filter((row) => TARGET_LICENSE_PLATE_SET.has(normalizePlate(row.license_plate)));
   const plateRows = visibleRows.filter((row) => normalizePlate(row.license_plate) === selectedPlate);
+  const selectedPlateLabel = formatPlateLabel(selectedPlate);
+  const mobileStatus = loading
+    ? "loading"
+    : saveComplete
+      ? "saved"
+      : targetRows.length
+        ? "found"
+        : file
+          ? "not_found"
+          : "idle";
 
   return (
     <div
@@ -286,6 +343,7 @@ function App() {
       <div className="shell">
         <header className="topbar">
           <div className="brand">
+            <img className="brand-logo" src="/logo.png" alt="Truck Tracker logo" />
             <div className="title-block">
               <h1>Truck Tracker</h1>
               <p>
@@ -341,7 +399,7 @@ function App() {
                 className={normalizePlate(selectedPlate) === normalizePlate(plate) ? "active" : ""}
                 onClick={() => setSelectedPlate(plate)}
               >
-                <span>{plate}</span>
+                <span>{formatPlateLabel(plate)}</span>
                 <small>{visibleRows.filter((row) => normalizePlate(row.license_plate) === normalizePlate(plate)).length} saved</small>
               </button>
             ))}
@@ -355,7 +413,7 @@ function App() {
                   {targetRows
                     .map(
                       (row) =>
-                        `${normalizeValue(row.license_plate)} | ${normalizeValue(row.arrival_code)} | ${normalizeValue(row.arrival_date)} | ${normalizeValue(row.batch_time)} | ${normalizeValue(row.product_type)} | ${normalizeValue(row.company)}`
+                        `${formatPlateLabel(row.license_plate)} | ${normalizeValue(row.arrival_code)} | ${normalizeValue(row.arrival_date)} | ${normalizeValue(row.batch_time)} | ${normalizeValue(row.product_type)} | ${normalizeValue(row.company)}`
                     )
                     .join("   ")}
                 </span>
@@ -375,7 +433,8 @@ function App() {
             <table>
               <thead>
                 <tr>
-                  <th>License Plate</th>
+                  <th>ID</th>
+                  <th>Plate</th>
                   <th>Code</th>
                   <th>Date</th>
                   <th>Time</th>
@@ -385,12 +444,11 @@ function App() {
               </thead>
               <tbody>
                 {plateRows.length ? (
-                  plateRows.map((row) => {
-                    const isTarget = normalizePlate(row.license_plate) === normalizePlate(selectedPlate);
-
+                  plateRows.map((row, index) => {
                     return (
-                      <tr key={row.id} className={isTarget ? "target-row" : ""}>
-                        <td>{normalizeValue(row.license_plate)}</td>
+                      <tr key={row.id}>
+                        <td>{index + 1}</td>
+                        <td>{formatPlateLabel(row.license_plate)}</td>
                         <td>{normalizeValue(row.arrival_code)}</td>
                         <td>{normalizeValue(row.arrival_date)}</td>
                         <td>{normalizeValue(row.batch_time)}</td>
@@ -401,8 +459,8 @@ function App() {
                   })
                 ) : (
                   <tr>
-                    <td colSpan="6" className="empty-cell">
-                      No saved rows for {selectedPlate}.
+                    <td colSpan="7" className="empty-cell">
+                      No saved rows for {selectedPlateLabel}.
                     </td>
                   </tr>
                 )}
@@ -422,7 +480,7 @@ function App() {
         />
       </div>
 
-      {loading ? (
+      {loading && !isMobile ? (
         <div className="status-overlay" aria-live="polite">
           <div className="status-card">
             <div className="spinner" />
@@ -435,12 +493,127 @@ function App() {
       <button
         type="button"
         className="floating-plus"
-        onClick={openFilePicker}
-        aria-label="Choose file"
-        title="Choose file"
+        onClick={handlePrimaryAction}
+        aria-label={isMobile ? "Open actions" : "Choose file"}
+        title={isMobile ? "Open actions" : "Choose file"}
       >
-        +
+        {isMobile && mobileSheetOpen ? "x" : "+"}
       </button>
+
+      {isMobile && showTopButton ? (
+        <button
+          type="button"
+          className="floating-top"
+          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+          aria-label="Scroll to top"
+          title="Scroll to top"
+        >
+          ^
+        </button>
+      ) : null}
+
+      {isMobile && mobileSheetOpen ? (
+        <div className="mobile-sheet-backdrop" onClick={closeMobileSheet} role="presentation">
+          <div className="mobile-sheet" onClick={(event) => event.stopPropagation()}>
+            <div className="mobile-sheet-head">
+              <strong>Truck Tracker</strong>
+              <button type="button" className="sheet-close" onClick={closeMobileSheet} aria-label="Close actions">
+                x
+              </button>
+            </div>
+
+            <div className={`sheet-status ${mobileStatus}`}>
+              {mobileStatus === "loading" ? (
+                <>
+                  <div className="spinner" />
+                  <strong>Loading file</strong>
+                  <p>Reading the spreadsheet and checking every target match.</p>
+                </>
+              ) : mobileStatus === "found" ? (
+                <>
+                  <strong>{targetRows.length} match{targetRows.length === 1 ? "" : "es"} found</strong>
+                  <p>
+                    These are the exact rows that matched the target plates in the file.
+                  </p>
+                  <div className="sheet-preview">
+                    {targetRows.map((row, index) => (
+                      <div
+                        key={`${row.license_plate}-${row.arrival_code}-${row.arrival_date}-${row.batch_time}-${index}`}
+                        className="sheet-preview-row"
+                      >
+                        <div className="sheet-preview-row-head">
+                          <strong>{formatPlateLabel(row.license_plate)}</strong>
+                          <span>Match {index + 1}</span>
+                        </div>
+                        <div className="sheet-preview-meta">
+                          <div>
+                            <b>Plate</b>
+                            <span>{normalizeValue(row.license_plate)}</span>
+                          </div>
+                          <div>
+                            <b>Code</b>
+                            <span>{normalizeValue(row.arrival_code)}</span>
+                          </div>
+                          <div>
+                            <b>Date</b>
+                            <span>{normalizeValue(row.arrival_date)}</span>
+                          </div>
+                          <div>
+                            <b>Time</b>
+                            <span>{normalizeValue(row.batch_time)}</span>
+                          </div>
+                          <div>
+                            <b>Product</b>
+                            <span>{normalizeValue(row.product_type)}</span>
+                          </div>
+                          <div>
+                            <b>Company</b>
+                            <span>{normalizeValue(row.company)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : mobileStatus === "saved" ? (
+                <>
+                  <strong>Saved</strong>
+                  <p>The target rows were written to the database.</p>
+                </>
+              ) : mobileStatus === "not_found" ? (
+                <>
+                  <strong>Not found</strong>
+                  <p>No target plates were found in the selected file.</p>
+                </>
+              ) : (
+                <>
+                  <strong>Ready</strong>
+                  <p>Choose a file to start the import.</p>
+                </>
+              )}
+            </div>
+
+            <button type="button" className="sheet-action" onClick={openFilePicker}>
+              Choose file
+            </button>
+
+            {mobileStatus === "found" ? (
+              <button
+                type="button"
+                className="sheet-action primary"
+                onClick={handleSave}
+                disabled={!targetRows.length || saving}
+              >
+                {saving ? "Saving..." : "Save target rows"}
+              </button>
+            ) : null}
+
+            <button type="button" className="sheet-action" onClick={closeMobileSheet}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

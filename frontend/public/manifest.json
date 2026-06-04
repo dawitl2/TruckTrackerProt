@@ -6,21 +6,16 @@
   "scope": ".",
   "display": "standalone",
   "orientation": "portrait-primary",
-  "background_color": "#07111f",
-  "theme_color": "#0b1526",
+  "background_color": "#ffffff",
+  "theme_color": "#d81f44",
   "icons": [
     {
-      "src": "favicon.ico",
-      "sizes": "64x64 32x32 24x24 16x16",
-      "type": "image/x-icon"
-    },
-    {
-      "src": "logo192.png",
+      "src": "Total-Logo.png",
       "type": "image/png",
       "sizes": "192x192"
     },
     {
-      "src": "logo512.png",
+      "src": "Total-Logo.png",
       "type": "image/png",
       "sizes": "512x512"
     }
