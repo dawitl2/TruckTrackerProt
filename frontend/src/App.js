@@ -129,6 +129,19 @@ function App() {
   const clearNotice = () => setNotice("");
   const clearError = () => setError("");
 
+  // Reset all scan state back to idle
+  const resetScanState = () => {
+    setFile(null);
+    setTargetRows([]);
+    setSaveComplete(false);
+    setLoading(false);
+    setSaving(false);
+    clearNotice();
+    clearError();
+    // Reset the file input so the same file can be picked again later
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
   const loadSavedRows = async () => {
     let response;
     try {
@@ -171,7 +184,11 @@ function App() {
     openFilePicker();
   };
 
-  const closeMobileSheet = () => setMobileSheetOpen(false);
+  // Cancel: close sheet AND wipe all scan state so reopening shows "Ready"
+  const closeMobileSheet = () => {
+    setMobileSheetOpen(false);
+    resetScanState();
+  };
 
   const handleFileSelected = async (nextFile) => {
     if (!nextFile) return;
@@ -267,9 +284,9 @@ function App() {
           <img className="brand-logo" src="/logo.png" alt="Truck Tracker logo" />
         </header>
 
-        {/* ── Scan result banner (desktop) ── */}
+        {/* ── Scan result banner (desktop only — hidden on mobile via CSS) ── */}
         {scanState === "found" ? (
-          <div className="scan-result found" role="status" aria-live="polite">
+          <div className="scan-result found desktop-only" role="status" aria-live="polite">
             <div className="scan-icon">✓</div>
             <div className="scan-body">
               <strong>{targetRows.length} match{targetRows.length === 1 ? "" : "es"} found</strong>
@@ -289,7 +306,7 @@ function App() {
             </button>
           </div>
         ) : scanState === "not_found" ? (
-          <div className="scan-result not-found" role="alert">
+          <div className="scan-result not-found desktop-only" role="alert">
             <div className="scan-icon not-found-x">✕</div>
             <div className="scan-body">
               <strong>No matches found</strong>
@@ -297,7 +314,7 @@ function App() {
             </div>
           </div>
         ) : scanState === "saved" ? (
-          <div className="scan-result saved" role="status">
+          <div className="scan-result saved desktop-only" role="status">
             <div className="scan-icon">✓</div>
             <div className="scan-body">
               <strong>Saved successfully</strong>
