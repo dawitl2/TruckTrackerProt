@@ -1,1 +1,10 @@
-{}
+{
+  "framework": "create-react-app",
+  "rootDirectory": "frontend",
+  "functions": {
+    "api/import.js": {
+      "memory": 512,
+      "maxDuration": 10
+    }
+  }
+}
