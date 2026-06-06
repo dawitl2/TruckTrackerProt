@@ -1,7 +1,7 @@
 import formidable from "formidable";
 import * as XLSX from "xlsx";
 
-const TARGET_LICENSE_PLATES = ["A33233/40337", "A21457/37737"];
+const TARGET_LICENSE_PLATES = ["A09321/32699", "A06725/32431"];
 const SUPABASE_URL = "https://ceaznmvgerreomiklcwo.supabase.co";
 const SUPABASE_KEY = "sb_publishable_kF30JdMpqmsM9VmXPZLYAw_i8V58YJJ";
 const SUPABASE_TABLE = "truck_arrivals";
