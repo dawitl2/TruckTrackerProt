@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import * as XLSX from "xlsx";
 import "./App.css";
 
-const TARGET_LICENSE_PLATES = ["A33233/40337", "A21457/37737"];
+const TARGET_LICENSE_PLATES = ["A06725/32431", "A09321/32699"];
 const TARGET_LICENSE_PLATE_SET = new Set(TARGET_LICENSE_PLATES.map(normalizePlate));
 const SUPABASE_URL = "https://ceaznmvgerreomiklcwo.supabase.co";
 const SUPABASE_KEY = "sb_publishable_kF30JdMpqmsM9VmXPZLYAw_i8V58YJJ";
@@ -10,8 +10,8 @@ const SUPABASE_TABLE = "truck_arrivals";
 const SUBDIVIDERS_TABLE = "subdividers";
 
 const DRIVERS = [
-  { id: 1, name: "Ermiyas Atakilt", photo: "/driver1.png" },
-  { id: 2, name: "Dawit", photo: "/driver2.png" },
+  { id: 1, name: "Name 1", photo: "/driver1.png" },
+  { id: 2, name: "Name 2", photo: "/driver2.png" },
 ];
 
 function supabaseHeaders(extra = {}) {
@@ -1046,7 +1046,7 @@ function App() {
               </div>
             </div>
             <div className="driver-info">
-              <p className="driver-label">Addis Ababa, Bole_Total</p>
+              <p className="driver-label">Driver</p>
               <p className="driver-name">{currentDriver.name}</p>
               <p className="driver-plate">{formatPlateLabel(selectedPlate)}</p>
             </div>
