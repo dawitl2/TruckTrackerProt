@@ -836,3 +836,158 @@ tbody tr:hover td { background: rgba(216,31,68,0.025); }
     padding-top: 12px;
   }
 }
+
+/* ─── Shortcut popup ──────────────────────────────────────── */
+.shortcut-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15,13,12,0.45);
+  backdrop-filter: blur(8px);
+  animation: fadeIn 0.2s ease;
+}
+
+.shortcut-popup {
+  position: relative;
+  width: min(420px, 100%);
+  padding: 32px 28px 28px;
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  border: 1.5px solid transparent;
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  animation: sheetUp 0.28s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+.shortcut-popup.saved {
+  border-color: rgba(22, 163, 74, 0.25);
+}
+
+.shortcut-popup.not_found {
+  border-color: rgba(216, 31, 68, 0.22);
+}
+
+.shortcut-popup strong {
+  font-size: 1.1rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.shortcut-popup.saved strong { color: #15803d; }
+.shortcut-popup.not_found strong { color: var(--red-deep); }
+
+.shortcut-popup p {
+  font-size: 0.875rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.shortcut-icon {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.2rem;
+  font-weight: 900;
+  margin-bottom: 4px;
+}
+
+.shortcut-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--border-md);
+  background: var(--surface-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  color: var(--muted);
+  transition: background 0.14s;
+}
+.shortcut-close:hover { background: var(--border); }
+
+.shortcut-rows {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shortcut-row-item {
+  background: rgba(22, 163, 74, 0.06);
+  border: 1px solid rgba(22, 163, 74, 0.18);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+}
+
+.shortcut-plate {
+  font-size: 0.9rem;
+  font-weight: 800;
+  font-family: var(--mono);
+  color: #15803d;
+}
+
+.shortcut-detail {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.shortcut-dismiss-btn {
+  width: 100%;
+  height: 50px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-md);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 700;
+  margin-top: 4px;
+  transition: background 0.14s, transform 0.14s;
+}
+
+.shortcut-dismiss-btn:hover {
+  background: rgba(0,0,0,0.05);
+  transform: translateY(-1px);
+}
+
+.shortcut-dismiss-btn.green {
+  background: #16a34a;
+  color: #fff;
+  border-color: #15803d;
+  box-shadow: 0 4px 14px rgba(22,163,74,0.28);
+}
+
+.shortcut-dismiss-btn.green:hover {
+  background: #15803d;
+  transform: translateY(-1px);
+}
+
+/* ─── Highlighted row (from shortcut import) ─────────────── */
+.row-highlight td {
+  background: rgba(22, 163, 74, 0.18) !important;
+  border-bottom-color: rgba(22, 163, 74, 0.3) !important;
+  animation: highlightPulse 1.5s ease;
+}
+
+@keyframes highlightPulse {
+  0%   { background: rgba(22, 163, 74, 0.45); }
+  100% { background: rgba(22, 163, 74, 0.18); }
+}

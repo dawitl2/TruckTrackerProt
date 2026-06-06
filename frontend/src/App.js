@@ -111,6 +111,14 @@ async function parseBatchFile(file) {
   return parsed;
 }
 
+// Check if a row was saved within the last 5 minutes
+function isRecentRow(row) {
+  if (!row.created_at) return false;
+  const saved = new Date(row.created_at);
+  const now = new Date();
+  return (now - saved) < 1 * 60 * 1000;
+}
+
 function App() {
   const [file, setFile] = useState(null);
   const [savedRows, setSavedRows] = useState([]);
@@ -124,12 +132,16 @@ function App() {
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+
+  // Shortcut popup state
+  const [shortcutPopup, setShortcutPopup] = useState(null); // null | { status: 'saved'|'not_found', rows: [] }
+  const [highlightedIds, setHighlightedIds] = useState(new Set());
+
   const fileInputRef = useRef(null);
 
   const clearNotice = () => setNotice("");
   const clearError = () => setError("");
 
-  // Reset all scan state back to idle
   const resetScanState = () => {
     setFile(null);
     setTargetRows([]);
@@ -138,7 +150,6 @@ function App() {
     setSaving(false);
     clearNotice();
     clearError();
-    // Reset the file input so the same file can be picked again later
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -155,10 +166,44 @@ function App() {
     const data = await readJsonResponse(response);
     if (!response.ok) throw new Error(data.error?.message || data.message || "Failed to load saved rows");
     setSavedRows(data || []);
+    return data || [];
   };
 
+  // On mount: check for ?from=shortcut in the URL
   useEffect(() => {
-    loadSavedRows().catch((loadError) => setError(loadError.message));
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("from") === "shortcut") {
+      // Clean the URL so refreshing doesn't re-trigger
+      window.history.replaceState({}, "", window.location.pathname);
+
+      // Wait a moment for the API to finish saving, then check
+      setTimeout(async () => {
+        try {
+          const rows = await loadSavedRows();
+          const recentRows = rows.filter(
+            (row) =>
+              TARGET_LICENSE_PLATE_SET.has(normalizePlate(row.license_plate)) &&
+              isRecentRow(row)
+          );
+
+          if (recentRows.length > 0) {
+            // Switch to the tab of the first found plate
+            setSelectedPlate(recentRows[0].license_plate);
+            // Highlight the recent rows in the table
+            setHighlightedIds(new Set(recentRows.map((r) => r.id)));
+            setShortcutPopup({ status: "saved", rows: recentRows });
+            // Remove highlight after 10 seconds
+            setTimeout(() => setHighlightedIds(new Set()), 10000);
+          } else {
+            setShortcutPopup({ status: "not_found", rows: [] });
+          }
+        } catch {
+          setShortcutPopup({ status: "not_found", rows: [] });
+        }
+      }, 2000);
+    } else {
+      loadSavedRows().catch((loadError) => setError(loadError.message));
+    }
   }, []);
 
   useEffect(() => {
@@ -184,7 +229,6 @@ function App() {
     openFilePicker();
   };
 
-  // Cancel: close sheet AND wipe all scan state so reopening shows "Ready"
   const closeMobileSheet = () => {
     setMobileSheetOpen(false);
     resetScanState();
@@ -262,7 +306,6 @@ function App() {
   const plateRows = visibleRows.filter((row) => normalizePlate(row.license_plate) === normalizePlate(selectedPlate));
   const selectedPlateLabel = formatPlateLabel(selectedPlate);
 
-  // desktop scan result state: null = idle, 'found' | 'not_found'
   const scanState = !file ? null : loading ? "loading" : targetRows.length && !saveComplete ? "found" : saveComplete ? "saved" : file ? "not_found" : null;
 
   const mobileStatus = loading
@@ -279,12 +322,64 @@ function App() {
     <div className="page">
       <div className="shell">
 
-        {/* ── Header: logo only, centered ── */}
+        {/* ── Header ── */}
         <header className="topbar">
           <img className="brand-logo" src="/logo.png" alt="Truck Tracker logo" />
         </header>
 
-        {/* ── Scan result banner (desktop only — hidden on mobile via CSS) ── */}
+        {/* ── Shortcut result popup ── */}
+        {shortcutPopup ? (
+          <div className="shortcut-backdrop" role="presentation">
+            <div className={`shortcut-popup ${shortcutPopup.status}`}>
+              <button
+                type="button"
+                className="shortcut-close"
+                onClick={() => setShortcutPopup(null)}
+                aria-label="Dismiss"
+              >
+                ✕
+              </button>
+
+              {shortcutPopup.status === "saved" ? (
+                <>
+                  <div className="shortcut-icon found-icon">✓</div>
+                  <strong>Saved from WhatsApp</strong>
+                  <p>{shortcutPopup.rows.length} row{shortcutPopup.rows.length === 1 ? "" : "s"} saved to the database.</p>
+                  <div className="shortcut-rows">
+                    {shortcutPopup.rows.map((row, i) => (
+                      <div key={row.id || i} className="shortcut-row-item">
+                        <span className="shortcut-plate">{formatPlateLabel(row.license_plate)}</span>
+                        <span className="shortcut-detail">{normalizeValue(row.arrival_code)} · {normalizeValue(row.arrival_date)} · {normalizeValue(row.batch_time)}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    className="shortcut-dismiss-btn green"
+                    onClick={() => setShortcutPopup(null)}
+                  >
+                    View in table
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="shortcut-icon not-found-icon">✕</div>
+                  <strong>Nothing was saved</strong>
+                  <p>The file didn't contain any of the target license plates.</p>
+                  <button
+                    type="button"
+                    className="shortcut-dismiss-btn"
+                    onClick={() => setShortcutPopup(null)}
+                  >
+                    Dismiss
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {/* ── Scan result banner (desktop only) ── */}
         {scanState === "found" ? (
           <div className="scan-result found desktop-only" role="status" aria-live="polite">
             <div className="scan-icon">✓</div>
@@ -296,12 +391,7 @@ function App() {
                 ).join("   ")}
               </span>
             </div>
-            <button
-              type="button"
-              className="scan-save-btn"
-              onClick={handleSave}
-              disabled={saving}
-            >
+            <button type="button" className="scan-save-btn" onClick={handleSave} disabled={saving}>
               {saving ? "Saving…" : "Save"}
             </button>
           </div>
@@ -379,7 +469,10 @@ function App() {
               <tbody>
                 {plateRows.length ? (
                   plateRows.map((row, index) => (
-                    <tr key={row.id}>
+                    <tr
+                      key={row.id}
+                      className={highlightedIds.has(row.id) ? "row-highlight" : ""}
+                    >
                       <td>{index + 1}</td>
                       <td>{normalizeValue(row.arrival_code)}</td>
                       <td>{normalizeValue(row.arrival_date)}</td>
