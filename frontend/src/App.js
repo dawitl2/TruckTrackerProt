@@ -104,15 +104,32 @@ function isRecentRow(row) {
 
 // Merge arrivals and subdividers into a single ordered list
 function mergeRowsWithDividers(arrivals, dividers) {
+  const dividerByAnchor = new Map();
+
+  dividers.forEach((divider) => {
+    const anchorKey = [
+      normalizePlate(divider.license_plate),
+      normalizeValue(divider.positioned_above_code),
+      normalizeValue(divider.positioned_above_date),
+      normalizeValue(divider.positioned_above_time)
+    ].join("|");
+
+    dividerByAnchor.set(anchorKey, divider);
+  });
+
   const merged = [];
   arrivals.forEach((row) => {
-    const divAbove = dividers.filter(
-      (d) =>
-        normalizePlate(d.license_plate) === normalizePlate(row.license_plate) &&
-        d.positioned_above_code === row.arrival_code &&
-        d.positioned_above_date === row.arrival_date
-    );
-    divAbove.forEach((div) => merged.push({ __type: "divider", ...div }));
+    const rowKey = [
+      normalizePlate(row.license_plate),
+      normalizeValue(row.arrival_code),
+      normalizeValue(row.arrival_date),
+      normalizeValue(row.batch_time)
+    ].join("|");
+
+    const divider = dividerByAnchor.get(rowKey);
+    if (divider) {
+      merged.push({ __type: "divider", ...divider });
+    }
     merged.push({ __type: "row", ...row });
   });
   return merged;
@@ -799,14 +816,16 @@ function App() {
                   if (item.__type === "divider") {
                     return (
                       <tr key={`div-${item.id}`} className="divider-row">
-                        <td colSpan="7" className="divider-cell">
-                          <span className="divider-label">{item.label}</span>
-                          <button
-                            type="button"
-                            className="divider-delete-btn"
-                            onClick={() => setConfirmModal({ type: "deleteDivider", row: item })}
-                            title="Remove divider"
-                          >✕</button>
+               <td colSpan="7" className="divider-cell">
+                          <div className="divider-inner">
+                            <span className="divider-label">{item.label}</span>
+                            <button
+                              type="button"
+                              className="divider-delete-btn"
+                              onClick={() => setConfirmModal({ type: "deleteDivider", row: item })}
+                              title="Remove divider"
+                            >✕</button>
+                          </div>
                         </td>
                       </tr>
                     );
