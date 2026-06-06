@@ -269,28 +269,56 @@ function App() {
 
   // On mount
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("from") === "shortcut") {
-      window.history.replaceState({}, "", window.location.pathname);
-      setTimeout(async () => {
-        try {
-          const rows = await loadSavedRows();
-          await loadSubdividers();
-          const recentRows = rows.filter((row) => TARGET_LICENSE_PLATE_SET.has(normalizePlate(row.license_plate)) && isRecentRow(row));
-          if (recentRows.length > 0) {
-            setSelectedPlate(recentRows[0].license_plate);
-            startHighlightTimer(new Set(recentRows.map((r) => r.id)));
-            setShortcutPopup({ status: "saved", rows: recentRows });
-          } else {
-            setShortcutPopup({ status: "not_found", rows: [] });
-          }
-        } catch { setShortcutPopup({ status: "not_found", rows: [] }); }
-      }, 2000);
-    } else {
-      loadAll().catch((err) => setError(err.message));
+  const hash = window.location.hash;
+
+  if (hash.startsWith("#imported=")) {
+    const importedPlates = hash
+      .replace("#imported=", "")
+      .split(",")
+      .map((p) => normalizePlate(p))
+      .filter(Boolean);
+
+    window.history.replaceState({}, "", window.location.pathname);
+
+    (async () => {
+      try {
+        const rows = await loadSavedRows();
+        await loadSubdividers();
+
+        const matchingRows = rows.filter((row) =>
+          importedPlates.includes(normalizePlate(row.license_plate))
+        );
+
+        if (matchingRows.length > 0) {
+          setSelectedPlate(matchingRows[0].license_plate);
+          startHighlightTimer(new Set(matchingRows.map((r) => r.id)));
+          setShortcutPopup({
+            status: "saved",
+            rows: matchingRows
+          });
+        } else {
+          setShortcutPopup({
+            status: "not_found",
+            rows: []
+          });
+        }
+      } catch {
+        setShortcutPopup({
+          status: "not_found",
+          rows: []
+        });
+      }
+    })();
+  } else {
+    loadAll().catch((err) => setError(err.message));
+  }
+
+  return () => {
+    if (highlightTimerRef.current) {
+      clearTimeout(highlightTimerRef.current);
     }
-    return () => { if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current); };
-  }, [loadAll, loadSavedRows, loadSubdividers, startHighlightTimer]);
+  };
+}, [loadAll, loadSavedRows, loadSubdividers, startHighlightTimer]);
 
   // Viewport + scroll
   useEffect(() => {
