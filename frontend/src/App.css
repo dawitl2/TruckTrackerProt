@@ -79,6 +79,11 @@ button { appearance: none; cursor: pointer; border: none; background: none; }
 /* ─── Banners ── */
 .message-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 24px 0; padding: 12px 16px; border-radius: var(--radius-md); border: 1px solid transparent; font-size: 0.875rem; font-weight: 500; animation: slideIn 0.2s ease; }
 .message-banner.error { background: rgba(216,31,68,0.06); color: #9a1228; border-color: rgba(216,31,68,0.15); }
+.message-banner.warning {
+  background: rgba(232, 153, 10, 0.08);
+  color: #92600a;
+  border-color: rgba(232, 153, 10, 0.25);
+}
 .banner-close { width: 26px; height: 26px; border-radius: 50%; border: 1px solid currentColor; background: rgba(255,255,255,0.6); color: inherit; font-size: 0.9rem; display: flex; align-items: center; justify-content: center; opacity: 0.7; transition: opacity 0.15s; }
 .banner-close:hover { opacity: 1; }
 
@@ -461,4 +466,8 @@ tbody tr:hover td { background: rgba(216,31,68,0.02); }
   .mobile-sheet-backdrop { padding-bottom: calc(12px + env(safe-area-inset-bottom,0px)); }
   .edit-modal { border-radius: var(--radius-xl) var(--radius-xl) var(--radius-lg) var(--radius-lg); padding: 24px 20px; }
   .confirm-modal { border-radius: var(--radius-xl); padding: 28px 20px; }
+
+  
+
 }
+

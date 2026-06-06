@@ -10,8 +10,8 @@ const SUPABASE_TABLE = "truck_arrivals";
 const SUBDIVIDERS_TABLE = "subdividers";
 
 const DRIVERS = [
-  { id: 1, name: "Name 1", photo: "/driver1.png" },
-  { id: 2, name: "Name 2", photo: "/driver2.png" },
+  { id: 1, name: "Ermiyas Atakilt", photo: "/driver1.png" },
+  { id: 2, name: "Dawit", photo: "/driver2.png" },
 ];
 
 function supabaseHeaders(extra = {}) {
@@ -110,35 +110,41 @@ function isRecentRow(row) {
   return diff >= 0 && diff < 60 * 1000;
 }
 
-// Merge arrivals and subdividers into a single ordered list
-function mergeRowsWithDividers(arrivals, dividers) {
-  // Sort dividers by position if available
-  const sortedDividers = [...dividers].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+// Returns rows from `incoming` that already exist in `existing`
+function findDuplicates(incoming, existing) {
+  return incoming.filter((newRow) =>
+    existing.some(
+      (existingRow) =>
+        normalizePlate(existingRow.license_plate) === normalizePlate(newRow.license_plate) &&
+        String(existingRow.arrival_code || "").trim() === String(newRow.arrival_code || "").trim() &&
+        String(existingRow.arrival_date || "").trim() === String(newRow.arrival_date || "").trim()
+    )
+  );
+}
 
+function mergeRowsWithDividers(arrivals, dividers) {
+  const sortedDividers = [...dividers].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
   const dividerByAnchor = new Map();
   sortedDividers.forEach((divider) => {
-    const anchorKey = [
+    const key = [
       normalizePlate(divider.license_plate),
       normalizeValue(divider.positioned_above_code),
       normalizeValue(divider.positioned_above_date),
       normalizeValue(divider.positioned_above_time)
     ].join("|");
-    dividerByAnchor.set(anchorKey, divider);
+    dividerByAnchor.set(key, divider);
   });
 
   const merged = [];
   arrivals.forEach((row) => {
-    const rowKey = [
+    const key = [
       normalizePlate(row.license_plate),
       normalizeValue(row.arrival_code),
       normalizeValue(row.arrival_date),
       normalizeValue(row.batch_time)
     ].join("|");
-
-    const divider = dividerByAnchor.get(rowKey);
-    if (divider) {
-      merged.push({ __type: "divider", ...divider });
-    }
+    const divider = dividerByAnchor.get(key);
+    if (divider) merged.push({ __type: "divider", ...divider });
     merged.push({ __type: "row", ...row });
   });
   return merged;
@@ -158,55 +164,43 @@ function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  // Shortcut popup
   const [shortcutPopup, setShortcutPopup] = useState(null);
   const [highlightedIds, setHighlightedIds] = useState(new Set());
   const highlightTimerRef = useRef(null);
 
-  // Plus menu: null | 'choose' | 'file' | 'manual'
   const [plusMode, setPlusMode] = useState(null);
-
-  // Manual entry fields
   const [manualFields, setManualFields] = useState({ license_plate: "", arrival_code: "", arrival_date: "", batch_time: "", product_type: "", company: "", paid: false });
   const [manualSaving, setManualSaving] = useState(false);
   const [manualError, setManualError] = useState("");
 
-  // Context menu (rows)
   const [contextMenu, setContextMenu] = useState(null);
   const longPressTimer = useRef(null);
   const contextMenuRef = useRef(null);
 
-  // Divider context menu
   const [dividerContextMenu, setDividerContextMenu] = useState(null);
   const dividerLongPressTimer = useRef(null);
   const dividerContextMenuRef = useRef(null);
 
-  // Divider rename modal
   const [renameTarget, setRenameTarget] = useState(null);
   const [renameLabel, setRenameLabel] = useState("");
   const [renameSaving, setRenameSaving] = useState(false);
 
-  // Divider drag-to-reorder state
   const [draggingDividerId, setDraggingDividerId] = useState(null);
   const [dragOverIndex, setDragOverIndex] = useState(null);
   const dragDividerRef = useRef(null);
 
-  // Confirm modal: { type: 'paid'|'delete'|'deleteDivider', row }
   const [confirmModal, setConfirmModal] = useState(null);
   const [confirmLoading, setConfirmLoading] = useState(false);
 
-  // Subdivide label input
   const [subdivideTarget, setSubdivideTarget] = useState(null);
   const [subdivideLabel, setSubdivideLabel] = useState("");
   const [subdivideSaving, setSubdivideSaving] = useState(false);
 
-  // Edit modal
   const [editRow, setEditRow] = useState(null);
   const [editFields, setEditFields] = useState({});
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState("");
 
-  // Pull-to-refresh
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const pullStartY = useRef(null);
   const pullCurrentY = useRef(0);
@@ -226,20 +220,17 @@ function App() {
 
   const loadSubdividers = useCallback(async () => {
     try {
-      const resp = await fetch(
-        `${SUPABASE_URL}/rest/v1/${SUBDIVIDERS_TABLE}?select=*&order=created_at.asc`,
-        { headers: supabaseHeaders() }
-      );
+      const resp = await fetch(`${SUPABASE_URL}/rest/v1/${SUBDIVIDERS_TABLE}?select=*&order=created_at.asc`, { headers: supabaseHeaders() });
       const data = await readJsonResponse(resp);
       setSubdividers(Array.isArray(data) ? data : []);
-    } catch { /* non-critical */ }
+    } catch { }
   }, []);
 
   const loadSavedRows = useCallback(async () => {
     let response;
     try {
       response = await fetch(
-       `${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}?select=id,paid,arrival_date,batch_time,license_plate,arrival_code,product_type,company,created_at&order=arrival_date.desc,created_at.desc&limit=50`,
+        `${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}?select=id,paid,arrival_date,batch_time,license_plate,arrival_code,product_type,company,created_at&order=arrival_date.desc,created_at.desc&limit=50`,
         { headers: supabaseHeaders() }
       );
     } catch { throw new Error("Could not reach Supabase."); }
@@ -259,7 +250,6 @@ function App() {
     highlightTimerRef.current = setTimeout(() => setHighlightedIds(new Set()), 5 * 60 * 1000);
   }, []);
 
-  // Close context menus on outside click
   useEffect(() => {
     const handler = (e) => {
       if (contextMenuRef.current && !contextMenuRef.current.contains(e.target)) setContextMenu(null);
@@ -270,12 +260,11 @@ function App() {
     return () => { document.removeEventListener("mousedown", handler); document.removeEventListener("touchstart", handler); };
   }, []);
 
-  // On mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("from") === "shortcut") {
       window.history.replaceState({}, "", window.location.pathname);
-      setTimeout(async () => {
+      const checkForRecentRows = async (attemptsLeft) => {
         try {
           const rows = await loadSavedRows();
           await loadSubdividers();
@@ -284,18 +273,21 @@ function App() {
             setSelectedPlate(recentRows[0].license_plate);
             startHighlightTimer(new Set(recentRows.map((r) => r.id)));
             setShortcutPopup({ status: "saved", rows: recentRows });
+          } else if (attemptsLeft > 0) {
+            // Retry after 2 more seconds
+            setTimeout(() => checkForRecentRows(attemptsLeft - 1), 2000);
           } else {
             setShortcutPopup({ status: "not_found", rows: [] });
           }
         } catch { setShortcutPopup({ status: "not_found", rows: [] }); }
-      }, 2000);
+      };
+      setTimeout(() => checkForRecentRows(13), 2000);
     } else {
       loadAll().catch((err) => setError(err.message));
     }
     return () => { if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current); };
   }, [loadAll, loadSavedRows, loadSubdividers, startHighlightTimer]);
 
-  // Viewport + scroll
   useEffect(() => {
     const updateViewport = () => setIsMobile(window.innerWidth <= 720);
     const updateScroll = () => setShowTopButton(window.scrollY > 280);
@@ -305,7 +297,6 @@ function App() {
     return () => { window.removeEventListener("resize", updateViewport); window.removeEventListener("scroll", updateScroll); };
   }, []);
 
-  // Pull-to-refresh
   useEffect(() => {
     if (!isMobile) return;
     const onTouchStart = (e) => { pullStartY.current = window.scrollY === 0 ? e.touches[0].clientY : null; };
@@ -332,7 +323,6 @@ function App() {
     };
   }, [isMobile, loadAll]);
 
-  // ── File import ───────────────────────────────────────────
   const openFilePicker = () => { fileInputRef.current?.click(); setPlusMode(null); };
 
   const handleFileSelected = async (nextFile) => {
@@ -358,6 +348,14 @@ function App() {
         license_plate: String(row.license_plate || "").trim(), arrival_code: String(row.arrival_code || "").trim(),
         product_type: toDbValue(row.product_type), company: toDbValue(row.company)
       }));
+
+      // Duplicate check
+      const dupes = findDuplicates(payload, savedRows);
+      if (dupes.length) {
+        setError(`duplicate:${dupes.map(d => `${d.arrival_code} · ${d.arrival_date}`).join(", ")}`);
+        setSaving(false); return;
+      }
+
       const response = await fetch(`${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}`, {
         method: "POST",
         headers: supabaseHeaders({ "Content-Type": "application/json", Prefer: "return=representation" }),
@@ -373,13 +371,23 @@ function App() {
     finally { setSaving(false); }
   };
 
-  // ── Manual entry ──────────────────────────────────────────
   const handleManualSave = async () => {
     if (!manualFields.license_plate.trim() || !manualFields.arrival_code.trim()) {
       setManualError("License plate and arrival code are required."); return;
     }
     setManualSaving(true); setManualError("");
     try {
+      // Duplicate check for manual entry
+      const dupeCheck = findDuplicates([{
+        license_plate: manualFields.license_plate.trim(),
+        arrival_code: manualFields.arrival_code.trim(),
+        arrival_date: manualFields.arrival_date
+      }], savedRows);
+      if (dupeCheck.length) {
+        setManualError(`Already exists: ${manualFields.arrival_code} · ${manualFields.arrival_date}`);
+        setManualSaving(false); return;
+      }
+
       const response = await fetch(`${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}`, {
         method: "POST",
         headers: supabaseHeaders({ "Content-Type": "application/json", Prefer: "return=representation" }),
@@ -402,7 +410,6 @@ function App() {
     finally { setManualSaving(false); }
   };
 
-  // ── Confirm modal actions ─────────────────────────────────
   const handleConfirm = async () => {
     if (!confirmModal) return;
     setConfirmLoading(true);
@@ -431,7 +438,6 @@ function App() {
     finally { setConfirmLoading(false); }
   };
 
-  // ── Edit modal ────────────────────────────────────────────
   const openEditModal = (row) => {
     setContextMenu(null);
     setEditRow(row);
@@ -465,7 +471,6 @@ function App() {
     finally { setEditSaving(false); }
   };
 
-  // ── Subdivide ─────────────────────────────────────────────
   const handleSubdivideSubmit = async () => {
     if (!subdivideTarget || !subdivideLabel.trim()) return;
     setSubdivideSaving(true);
@@ -488,7 +493,6 @@ function App() {
     finally { setSubdivideSaving(false); }
   };
 
-  // ── Divider rename ────────────────────────────────────────
   const handleDividerRename = async () => {
     if (!renameTarget || !renameLabel.trim()) return;
     setRenameSaving(true);
@@ -505,16 +509,10 @@ function App() {
     finally { setRenameSaving(false); }
   };
 
-  // ── Divider drag-to-reorder ────────────────────────────────
-  // We reorder dividers in the mergedRows list by updating which arrival row they're anchored above.
-  // On drag end, we PATCH the subdivider's anchor fields to the new position.
   const handleDividerDragStart = (e, dividerId) => {
     setDraggingDividerId(dividerId);
     dragDividerRef.current = dividerId;
-    if (e.dataTransfer) {
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", dividerId);
-    }
+    if (e.dataTransfer) { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", dividerId); }
   };
 
   const handleDividerDragOver = (e, index) => {
@@ -526,13 +524,8 @@ function App() {
   const handleDividerDrop = async (e, targetArrivalRow) => {
     e.preventDefault();
     const dividerId = dragDividerRef.current;
-    setDraggingDividerId(null);
-    setDragOverIndex(null);
-    dragDividerRef.current = null;
-
+    setDraggingDividerId(null); setDragOverIndex(null); dragDividerRef.current = null;
     if (!dividerId || !targetArrivalRow) return;
-
-    // Update the divider's anchor to be above this arrival row
     try {
       const response = await fetch(`${SUPABASE_URL}/rest/v1/${SUBDIVIDERS_TABLE}?id=eq.${dividerId}`, {
         method: "PATCH",
@@ -549,44 +542,24 @@ function App() {
     } catch (err) { setError(err.message); }
   };
 
-  const handleDragEnd = () => {
-    setDraggingDividerId(null);
-    setDragOverIndex(null);
-    dragDividerRef.current = null;
-  };
+  const handleDragEnd = () => { setDraggingDividerId(null); setDragOverIndex(null); dragDividerRef.current = null; };
 
-  // Touch-based drag for mobile dividers
   const touchDragState = useRef({ active: false, dividerId: null, startY: 0, currentRowIndex: null });
 
   const handleDividerTouchStart = (e, divider) => {
-    // Only activate after long-press (600ms) for drag mode
-    // Short tap opens context menu — handled separately
-    touchDragState.current = {
-      active: false,
-      dividerId: divider.id,
-      startY: e.touches[0].clientY,
-      currentRowIndex: null,
-      divider,
-    };
+    touchDragState.current = { active: false, dividerId: divider.id, startY: e.touches[0].clientY, currentRowIndex: null, divider };
   };
 
   const handleDividerTouchMove = (e) => {
     const state = touchDragState.current;
     if (!state.dividerId) return;
     const delta = Math.abs(e.touches[0].clientY - state.startY);
-    if (!state.active && delta > 10) {
-      state.active = true;
-      setDraggingDividerId(state.dividerId);
-    }
+    if (!state.active && delta > 10) { state.active = true; setDraggingDividerId(state.dividerId); }
     if (state.active) {
       e.preventDefault();
-      // Find which row we're hovering over using elementFromPoint
       const el = document.elementFromPoint(e.touches[0].clientX, e.touches[0].clientY);
       const tr = el?.closest("tr[data-row-index]");
-      if (tr) {
-        const idx = parseInt(tr.dataset.rowIndex, 10);
-        if (!isNaN(idx)) setDragOverIndex(idx);
-      }
+      if (tr) { const idx = parseInt(tr.dataset.rowIndex, 10); if (!isNaN(idx)) setDragOverIndex(idx); }
     }
   };
 
@@ -594,23 +567,14 @@ function App() {
     const state = touchDragState.current;
     if (!state.active || !state.dividerId || dragOverIndex === null) {
       touchDragState.current = { active: false, dividerId: null, startY: 0, currentRowIndex: null };
-      setDraggingDividerId(null);
-      setDragOverIndex(null);
-      return;
+      setDraggingDividerId(null); setDragOverIndex(null); return;
     }
-
-    // Find the arrival row at dragOverIndex
     const targetItem = mergedRowsList[dragOverIndex];
-    if (targetItem && targetItem.__type === "row") {
-      await handleDividerDrop({ preventDefault: () => {} }, targetItem);
-    }
-
+    if (targetItem && targetItem.__type === "row") await handleDividerDrop({ preventDefault: () => {} }, targetItem);
     touchDragState.current = { active: false, dividerId: null, startY: 0, currentRowIndex: null };
-    setDraggingDividerId(null);
-    setDragOverIndex(null);
+    setDraggingDividerId(null); setDragOverIndex(null);
   };
 
-  // ── Row context menu ──────────────────────────────────────
   const openContextMenu = (e, row) => {
     e.preventDefault();
     const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
@@ -618,12 +582,9 @@ function App() {
     setContextMenu({ row, x, y });
   };
 
-  const handleRowTouchStart = (e, row) => {
-    longPressTimer.current = setTimeout(() => openContextMenu(e, row), 600);
-  };
+  const handleRowTouchStart = (e, row) => { longPressTimer.current = setTimeout(() => openContextMenu(e, row), 600); };
   const handleRowTouchEnd = () => { if (longPressTimer.current) clearTimeout(longPressTimer.current); };
 
-  // ── Divider context menu ──────────────────────────────────
   const openDividerContextMenu = (e, divider) => {
     e.preventDefault();
     const x = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
@@ -632,15 +593,10 @@ function App() {
   };
 
   const handleDividerLongPressStart = (e, divider) => {
-    dividerLongPressTimer.current = setTimeout(() => {
-      openDividerContextMenu(e, divider);
-    }, 600);
+    dividerLongPressTimer.current = setTimeout(() => openDividerContextMenu(e, divider), 600);
   };
-  const handleDividerLongPressEnd = () => {
-    if (dividerLongPressTimer.current) clearTimeout(dividerLongPressTimer.current);
-  };
+  const handleDividerLongPressEnd = () => { if (dividerLongPressTimer.current) clearTimeout(dividerLongPressTimer.current); };
 
-  // ── Table data ────────────────────────────────────────────
   const visibleRows = savedRows.filter((row) => TARGET_LICENSE_PLATE_SET.has(normalizePlate(row.license_plate)));
   const plateRows = visibleRows.filter((row) => normalizePlate(row.license_plate) === normalizePlate(selectedPlate));
   const plateSubdividers = subdividers.filter((d) => normalizePlate(d.license_plate) === normalizePlate(selectedPlate));
@@ -649,16 +605,17 @@ function App() {
   const scanState = !file ? null : loading ? "loading" : targetRows.length && !saveComplete ? "found" : saveComplete ? "saved" : file ? "not_found" : null;
   const mobileStatus = loading ? "loading" : saveComplete ? "saved" : targetRows.length ? "found" : file ? "not_found" : "idle";
 
-  // Driver for selected plate
   const selectedPlateIndex = TARGET_LICENSE_PLATES.findIndex(p => normalizePlate(p) === normalizePlate(selectedPlate));
   const currentDriver = DRIVERS[selectedPlateIndex] ?? DRIVERS[0];
+
+  const isDuplicateError = error.startsWith("duplicate:");
+  const errorDisplay = isDuplicateError ? `⚠ Already in table: ${error.replace("duplicate:", "")}` : error;
 
   let rowIndex = 0;
 
   return (
     <div className="page">
 
-      {/* ── Pull-to-refresh ── */}
       {isMobile && (pullDistance > 0 || pullRefreshing) ? (
         <div className="pull-indicator" style={{ height: pullRefreshing ? 48 : Math.min(pullDistance, PULL_THRESHOLD + 20) }}>
           {pullRefreshing ? <div className="spinner small" /> : (
@@ -671,7 +628,6 @@ function App() {
 
       <div className="shell">
 
-        {/* ── Header ── */}
         <header className="topbar">
           <img className="brand-logo" src="/logo.png" alt="Truck Tracker logo" />
         </header>
@@ -708,7 +664,7 @@ function App() {
           </div>
         ) : null}
 
-        {/* ── Plus mode: choose ── */}
+        {/* ── Plus: choose ── */}
         {plusMode === "choose" ? (
           <div className="edit-backdrop" onClick={() => setPlusMode(null)} role="presentation">
             <div className="edit-modal" style={{ maxWidth: 340 }} onClick={(e) => e.stopPropagation()}>
@@ -731,7 +687,7 @@ function App() {
           </div>
         ) : null}
 
-        {/* ── Plus mode: manual entry ── */}
+        {/* ── Plus: manual entry ── */}
         {plusMode === "manual" ? (
           <div className="edit-backdrop" onClick={() => setPlusMode(null)} role="presentation">
             <div className="edit-modal" onClick={(e) => e.stopPropagation()}>
@@ -739,7 +695,9 @@ function App() {
                 <strong>New row</strong>
                 <button type="button" className="modal-x-btn" onClick={() => setPlusMode(null)}>✕</button>
               </div>
-              {manualError ? <div className="edit-error">{manualError}</div> : null}
+              {manualError ? (
+                <div className={`edit-error${manualError.startsWith("Already") ? " warning" : ""}`}>{manualError}</div>
+              ) : null}
               <div className="edit-fields">
                 {[
                   { key: "license_plate", label: "License Plate *" },
@@ -751,25 +709,17 @@ function App() {
                 ].map(({ key, label, placeholder }) => (
                   <div key={key} className="edit-field">
                     <label htmlFor={`manual-${key}`}>{label}</label>
-                    <input
-                      id={`manual-${key}`} type="text" value={manualFields[key] || ""} placeholder={placeholder || ""}
-                      onChange={(e) => setManualFields((p) => ({ ...p, [key]: e.target.value }))}
-                    />
+                    <input id={`manual-${key}`} type="text" value={manualFields[key] || ""} placeholder={placeholder || ""}
+                      onChange={(e) => setManualFields((p) => ({ ...p, [key]: e.target.value }))} />
                   </div>
                 ))}
                 <div className="edit-field">
                   <label>Payment status</label>
                   <div className="paid-toggle-row">
-                    <button
-                      type="button"
-                      className={`paid-toggle-btn ${manualFields.paid ? "active" : ""}`}
-                      onClick={() => setManualFields((p) => ({ ...p, paid: true }))}
-                    >✓ Paid</button>
-                    <button
-                      type="button"
-                      className={`paid-toggle-btn ${!manualFields.paid ? "active unpaid" : ""}`}
-                      onClick={() => setManualFields((p) => ({ ...p, paid: false }))}
-                    >— Unpaid</button>
+                    <button type="button" className={`paid-toggle-btn ${manualFields.paid ? "active" : ""}`}
+                      onClick={() => setManualFields((p) => ({ ...p, paid: true }))}>✓ Paid</button>
+                    <button type="button" className={`paid-toggle-btn ${!manualFields.paid ? "active unpaid" : ""}`}
+                      onClick={() => setManualFields((p) => ({ ...p, paid: false }))}>— Unpaid</button>
                   </div>
                 </div>
               </div>
@@ -786,12 +736,9 @@ function App() {
         {/* ── Row context menu ── */}
         {contextMenu ? (
           <div className="ctx-backdrop" onClick={() => setContextMenu(null)} role="presentation">
-            <div
-              ref={contextMenuRef}
-              className="ctx-menu"
+            <div ref={contextMenuRef} className="ctx-menu"
               style={!isMobile ? { top: Math.min(contextMenu.y, window.innerHeight - 260), left: Math.min(contextMenu.x, window.innerWidth - 210) } : {}}
-              onClick={(e) => e.stopPropagation()}
-            >
+              onClick={(e) => e.stopPropagation()}>
               <div className="ctx-row-label">
                 <span>{normalizeValue(contextMenu.row.arrival_code)}</span>
                 <span>{normalizeValue(contextMenu.row.arrival_date)}</span>
@@ -802,7 +749,8 @@ function App() {
                 {contextMenu.row.paid ? "— Mark as unpaid" : "✓ Mark as paid"}
               </button>
               <button type="button" className="ctx-item" onClick={() => openEditModal(contextMenu.row)}>✎ Edit row</button>
-              <button type="button" className="ctx-item" onClick={() => { setSubdivideTarget(contextMenu.row); setSubdivideLabel(""); setContextMenu(null); }}>
+              <button type="button" className="ctx-item"
+                onClick={() => { setSubdivideTarget(contextMenu.row); setSubdivideLabel(""); setContextMenu(null); }}>
                 ⊟ Subdivide above
               </button>
               <div className="ctx-divider" />
@@ -819,32 +767,20 @@ function App() {
         {/* ── Divider context menu ── */}
         {dividerContextMenu ? (
           <div className="ctx-backdrop" onClick={() => setDividerContextMenu(null)} role="presentation">
-            <div
-              ref={dividerContextMenuRef}
-              className="ctx-menu"
+            <div ref={dividerContextMenuRef} className="ctx-menu"
               style={!isMobile ? { top: Math.min(dividerContextMenu.y, window.innerHeight - 220), left: Math.min(dividerContextMenu.x, window.innerWidth - 210) } : {}}
-              onClick={(e) => e.stopPropagation()}
-            >
+              onClick={(e) => e.stopPropagation()}>
               <div className="ctx-row-label">
                 <span>{dividerContextMenu.divider.label}</span>
                 <span>Divider</span>
               </div>
               <div className="ctx-divider" />
               <button type="button" className="ctx-item"
-                onClick={() => {
-                  setRenameTarget(dividerContextMenu.divider);
-                  setRenameLabel(dividerContextMenu.divider.label);
-                  setDividerContextMenu(null);
-                }}>
+                onClick={() => { setRenameTarget(dividerContextMenu.divider); setRenameLabel(dividerContextMenu.divider.label); setDividerContextMenu(null); }}>
                 ✎ Rename
               </button>
               <button type="button" className="ctx-item"
-                onClick={() => {
-                  setDividerContextMenu(null);
-                  // Highlight the divider row to indicate drag mode is available
-                  setDraggingDividerId(dividerContextMenu.divider.id);
-                  setTimeout(() => setDraggingDividerId(null), 2500);
-                }}>
+                onClick={() => { setDividerContextMenu(null); setDraggingDividerId(dividerContextMenu.divider.id); setTimeout(() => setDraggingDividerId(null), 2500); }}>
                 ↕ Move (drag the row)
               </button>
               <div className="ctx-divider" />
@@ -866,11 +802,7 @@ function App() {
                 {confirmModal.type === "delete" || confirmModal.type === "deleteDivider" ? "✕" : confirmModal.row?.paid ? "—" : "✓"}
               </div>
               <strong>
-                {confirmModal.type === "delete" || confirmModal.type === "deleteDivider"
-                  ? "Delete this row?"
-                  : confirmModal.row?.paid
-                    ? "Mark as unpaid?"
-                    : "Mark as paid?"}
+                {confirmModal.type === "delete" || confirmModal.type === "deleteDivider" ? "Delete this row?" : confirmModal.row?.paid ? "Mark as unpaid?" : "Mark as paid?"}
               </strong>
               <p>
                 {confirmModal.type === "delete" || confirmModal.type === "deleteDivider"
@@ -879,12 +811,9 @@ function App() {
               </p>
               <div className="edit-actions">
                 <button type="button" className="edit-btn cancel" onClick={() => setConfirmModal(null)}>Cancel</button>
-                <button
-                  type="button"
+                <button type="button"
                   className={`edit-btn save ${confirmModal.type === "delete" || confirmModal.type === "deleteDivider" ? "danger-btn" : "green-btn"}`}
-                  onClick={handleConfirm}
-                  disabled={confirmLoading}
-                >
+                  onClick={handleConfirm} disabled={confirmLoading}>
                   {confirmLoading ? "…" : confirmModal.type === "delete" || confirmModal.type === "deleteDivider" ? "Yes, delete" : "Confirm"}
                 </button>
               </div>
@@ -892,7 +821,7 @@ function App() {
           </div>
         ) : null}
 
-        {/* ── Subdivide label input ── */}
+        {/* ── Subdivide input ── */}
         {subdivideTarget ? (
           <div className="edit-backdrop" onClick={() => setSubdivideTarget(null)} role="presentation">
             <div className="edit-modal" style={{ maxWidth: 360 }} onClick={(e) => e.stopPropagation()}>
@@ -900,17 +829,11 @@ function App() {
                 <strong>Add divider above</strong>
                 <button type="button" className="modal-x-btn" onClick={() => setSubdivideTarget(null)}>✕</button>
               </div>
-              <p className="modal-hint">
-                This will add a gray divider row above <strong>{normalizeValue(subdivideTarget.arrival_code)}</strong>.
-              </p>
+              <p className="modal-hint">Adds a gray divider row above <strong>{normalizeValue(subdivideTarget.arrival_code)}</strong>.</p>
               <div className="edit-field">
                 <label htmlFor="subdivide-label">Divider label</label>
-                <input
-                  id="subdivide-label" type="text" placeholder="e.g. After payment · 2,748,000"
-                  value={subdivideLabel}
-                  onChange={(e) => setSubdivideLabel(e.target.value)}
-                  autoFocus
-                />
+                <input id="subdivide-label" type="text" placeholder="e.g. After payment · 2,748,000"
+                  value={subdivideLabel} onChange={(e) => setSubdivideLabel(e.target.value)} autoFocus />
               </div>
               <div className="edit-actions">
                 <button type="button" className="edit-btn cancel" onClick={() => setSubdivideTarget(null)}>Cancel</button>
@@ -922,7 +845,7 @@ function App() {
           </div>
         ) : null}
 
-        {/* ── Divider rename modal ── */}
+        {/* ── Divider rename ── */}
         {renameTarget ? (
           <div className="edit-backdrop" onClick={() => setRenameTarget(null)} role="presentation">
             <div className="edit-modal" style={{ maxWidth: 360 }} onClick={(e) => e.stopPropagation()}>
@@ -932,12 +855,8 @@ function App() {
               </div>
               <div className="edit-field">
                 <label htmlFor="rename-label">Divider label</label>
-                <input
-                  id="rename-label" type="text" placeholder="Enter new label"
-                  value={renameLabel}
-                  onChange={(e) => setRenameLabel(e.target.value)}
-                  autoFocus
-                />
+                <input id="rename-label" type="text" placeholder="Enter new label"
+                  value={renameLabel} onChange={(e) => setRenameLabel(e.target.value)} autoFocus />
               </div>
               <div className="edit-actions">
                 <button type="button" className="edit-btn cancel" onClick={() => setRenameTarget(null)}>Cancel</button>
@@ -1017,8 +936,8 @@ function App() {
           </div>
 
           {error ? (
-            <div className="message-banner error" role="alert" aria-live="assertive">
-              <span>{error}</span>
+            <div className={`message-banner ${isDuplicateError ? "warning" : "error"}`} role="alert" aria-live="assertive">
+              <span>{errorDisplay}</span>
               <button type="button" className="banner-close" onClick={clearError}>✕</button>
             </div>
           ) : null}
@@ -1038,12 +957,8 @@ function App() {
           {/* ── Driver card ── */}
           <div className="driver-card">
             <div className="driver-photo-wrap">
-              <img
-                src={currentDriver.photo}
-                alt={`Driver ${currentDriver.id}`}
-                className="driver-photo"
-                onError={(e) => { e.currentTarget.style.display = "none"; e.currentTarget.nextSibling.style.display = "flex"; }}
-              />
+              <img src={currentDriver.photo} alt={`Driver ${currentDriver.id}`} className="driver-photo"
+                onError={(e) => { e.currentTarget.style.display = "none"; e.currentTarget.nextSibling.style.display = "flex"; }} />
               <div className="driver-photo-fallback" style={{ display: "none" }}>
                 <span>{currentDriver.name.charAt(0)}</span>
               </div>
@@ -1074,37 +989,21 @@ function App() {
                   if (item.__type === "divider") {
                     const isDragging = draggingDividerId === item.id;
                     return (
-                      <tr
-                        key={`div-${item.id}`}
-                        className={`divider-row${isDragging ? " divider-dragging" : ""}`}
-                        data-row-index={mergedIdx}
-                        draggable
+                      <tr key={`div-${item.id}`} className={`divider-row${isDragging ? " divider-dragging" : ""}`}
+                        data-row-index={mergedIdx} draggable
                         onDragStart={(e) => handleDividerDragStart(e, item.id)}
                         onDragEnd={handleDragEnd}
                         onContextMenu={(e) => openDividerContextMenu(e, item)}
-                        onTouchStart={(e) => {
-                          handleDividerLongPressStart(e, item);
-                          handleDividerTouchStart(e, item);
-                        }}
-                        onTouchMove={(e) => {
-                          handleDividerLongPressEnd();
-                          handleDividerTouchMove(e);
-                        }}
-                        onTouchEnd={(e) => {
-                          handleDividerLongPressEnd();
-                          handleDividerTouchEnd(e, mergedRows);
-                        }}
-                      >
+                        onTouchStart={(e) => { handleDividerLongPressStart(e, item); handleDividerTouchStart(e, item); }}
+                        onTouchMove={(e) => { handleDividerLongPressEnd(); handleDividerTouchMove(e); }}
+                        onTouchEnd={(e) => { handleDividerLongPressEnd(); handleDividerTouchEnd(e, mergedRows); }}>
                         <td colSpan="7" className="divider-cell">
                           <div className="divider-inner">
                             <span className="divider-drag-handle" title="Drag to reorder">⠿</span>
                             <span className="divider-label">{item.label}</span>
-                            <button
-                              type="button"
-                              className="divider-delete-btn"
+                            <button type="button" className="divider-delete-btn"
                               onClick={() => setConfirmModal({ type: "deleteDivider", row: item })}
-                              title="Remove divider"
-                            >✕</button>
+                              title="Remove divider">✕</button>
                           </div>
                         </td>
                       </tr>
@@ -1113,21 +1012,14 @@ function App() {
                   const idx = rowIndex++;
                   const isDropTarget = dragOverIndex === mergedIdx && draggingDividerId !== null;
                   return (
-                    <tr
-                      key={item.id}
-                      data-row-index={mergedIdx}
-                      className={[
-                        highlightedIds.has(item.id) ? "row-highlight" : "",
-                        item.paid ? "row-paid" : "",
-                        isDropTarget ? "drop-target" : ""
-                      ].filter(Boolean).join(" ")}
+                    <tr key={item.id} data-row-index={mergedIdx}
+                      className={[highlightedIds.has(item.id) ? "row-highlight" : "", item.paid ? "row-paid" : "", isDropTarget ? "drop-target" : ""].filter(Boolean).join(" ")}
                       onContextMenu={(e) => openContextMenu(e, item)}
                       onTouchStart={(e) => handleRowTouchStart(e, item)}
                       onTouchEnd={handleRowTouchEnd}
                       onTouchMove={handleRowTouchEnd}
                       onDragOver={(e) => handleDividerDragOver(e, mergedIdx)}
-                      onDrop={(e) => handleDividerDrop(e, item)}
-                    >
+                      onDrop={(e) => handleDividerDrop(e, item)}>
                       <td className="td-num">{idx + 1}</td>
                       <td className="td-paid">
                         <span className={`paid-badge ${item.paid ? "paid" : "unpaid"}`}>{item.paid ? "✓" : "—"}</span>
@@ -1148,11 +1040,9 @@ function App() {
         </section>
       </div>
 
-      {/* ── Hidden file input ── */}
       <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
         onChange={(e) => void handleFileSelected(e.target.files?.[0] || null)} />
 
-      {/* ── Desktop loading overlay ── */}
       {loading && !isMobile ? (
         <div className="status-overlay" aria-live="polite">
           <div className="status-card">
@@ -1163,14 +1053,12 @@ function App() {
         </div>
       ) : null}
 
-      {/* ── FAB ── */}
       <button type="button" className="floating-plus" onClick={() => setPlusMode("choose")} aria-label="Add row">+</button>
 
       {showTopButton ? (
         <button type="button" className="floating-top" onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })} aria-label="Scroll to top">↑</button>
       ) : null}
 
-      {/* ── Mobile sheet (file import status) ── */}
       {isMobile && mobileStatus !== "idle" && file ? (
         <div className="mobile-sheet-backdrop" onClick={resetScanState} role="presentation">
           <div className="mobile-sheet" onClick={(e) => e.stopPropagation()}>
