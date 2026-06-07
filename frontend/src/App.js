@@ -114,6 +114,15 @@ function findDuplicates(incoming, existing) {
   );
 }
 
+function isRecentShortcutRow(row) {
+  if (!row?.created_at) return false;
+
+  const createdAt = new Date(row.created_at).getTime();
+  if (!Number.isFinite(createdAt)) return false;
+
+  return Date.now() - createdAt <= 90 * 1000;
+}
+
 function mergeRowsWithDividers(arrivals, dividers) {
   const sortedDividers = [...dividers].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
   const dividerByAnchor = new Map();
@@ -283,6 +292,26 @@ function App() {
     if (fromShortcut) {
       const status = params.get("status"); // "saved" | "not_found" | "db_error" | "error"
 
+      const showRecentShortcutRows = async () => {
+        const rows = await loadSavedRows();
+        await loadSubdividers();
+
+        const recentRows = rows.filter(
+          (row) =>
+            TARGET_LICENSE_PLATE_SET.has(normalizePlate(row.license_plate)) &&
+            isRecentShortcutRow(row)
+        );
+
+        if (recentRows.length > 0) {
+          setSelectedPlate(recentRows[0].license_plate || TARGET_LICENSE_PLATES[0]);
+          setShortcutPopup({ status: "saved", rows: recentRows });
+          startHighlightTimer(new Set(recentRows.map((r) => String(r.id))));
+          return true;
+        }
+
+        return false;
+      };
+
       if (status === "saved" || status === "db_error") {
         // Decode base64 JSON blob embedded by the API - instant, no DB roundtrip
         const rows = parseShortcutRows(params);
@@ -293,24 +322,38 @@ function App() {
           const idSet = new Set(rows.map((r) => String(r.id)));
           startHighlightTimer(idSet);
         } else {
-          setShortcutPopup({ status: "not_found", rows: [] });
+          showRecentShortcutRows()
+            .then((found) => {
+              if (!found) setShortcutPopup({ status: "not_found", rows: [] });
+            })
+            .catch(() => setShortcutPopup({ status: "not_found", rows: [] }));
         }
       } else if (status === "not_found") {
-        setShortcutPopup({ status: "not_found", rows: [] });
+        showRecentShortcutRows()
+          .then((found) => {
+            if (!found) setShortcutPopup({ status: "not_found", rows: [] });
+          })
+          .catch(() => setShortcutPopup({ status: "not_found", rows: [] }));
       } else {
-        // "error" or unknown - show not_found rather than crashing
-        setShortcutPopup({ status: "not_found", rows: [] });
+        // Older iPhone shortcuts may POST to the API and then open the app separately.
+        // In that case there is no rows payload, so use the recent DB change as proof.
+        showRecentShortcutRows()
+          .then((found) => {
+            if (!found) setShortcutPopup({ status: "not_found", rows: [] });
+          })
+          .catch(() => setShortcutPopup({ status: "not_found", rows: [] }));
       }
 
-      // Load table in background - independent of popup
-      loadAll().catch((err) => setError(err.message));
+      if (status === "saved" || status === "db_error") {
+        loadAll().catch((err) => setError(err.message));
+      }
     } else {
       // Normal page load
       loadAll().catch((err) => setError(err.message));
     }
 
     return () => { if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current); };
-  }, [loadAll, startHighlightTimer]);
+  }, [loadAll, loadSavedRows, loadSubdividers, startHighlightTimer]);
 
   // After table loads, update highlights so they work even if IDs changed type
   // (string vs number doesn't matter — we store as strings now)
