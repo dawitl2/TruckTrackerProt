@@ -142,23 +142,23 @@ function mergeRowsWithDividers(arrivals, dividers) {
   return merged;
 }
 
-// Parse the shortcut rows directly from URL params — no DB roundtrip needed.
-// The API now sends everything required to show the popup instantly.
+// Decode the base64url JSON blob the API embeds in the redirect URL.
+// Using a single encoded blob avoids all comma/slash ambiguity with license plates.
 function parseShortcutRows(params) {
-  const ids = (params.get("ids") || "").split(",").filter(Boolean);
-  const plates = (params.get("plates") || "").split(",").filter(Boolean).map(decodeURIComponent);
-  const codes = (params.get("codes") || "").split(",").filter(Boolean).map(decodeURIComponent);
-  const dates = (params.get("dates") || "").split(",").filter(Boolean).map(decodeURIComponent);
-  const times = (params.get("times") || "").split(",").filter(Boolean).map(decodeURIComponent);
-
-  // Reconstruct row objects from URL data
-  return ids.map((id, i) => ({
-    id: id,
-    license_plate: plates[i] || "",
-    arrival_code: codes[i] || "",
-    arrival_date: dates[i] || "",
-    batch_time: times[i] || "",
-  })).filter((r) => r.license_plate && r.arrival_code);
+  const payload = params.get("rows");
+  if (!payload) return [];
+  try {
+    // base64url → base64 → JSON
+    const b64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const json = atob(b64);
+    const rows = JSON.parse(json);
+    return Array.isArray(rows)
+      ? rows.filter((r) => r && r.license_plate && r.arrival_code)
+      : [];
+  } catch (e) {
+    console.error("Failed to decode shortcut rows:", e);
+    return [];
+  }
 }
 
 function App() {
@@ -275,38 +275,34 @@ function App() {
     const params = new URLSearchParams(window.location.search);
     const fromShortcut = params.get("from") === "shortcut";
 
-    // Always clean the URL immediately so a page refresh doesn't re-trigger
+    // Clean URL immediately so a page refresh does not re-trigger the popup
     if (fromShortcut) {
       window.history.replaceState({}, "", window.location.pathname);
     }
 
     if (fromShortcut) {
-      const status = params.get("status"); // "saved" | "not_found" | "error"
+      const status = params.get("status"); // "saved" | "not_found" | "db_error" | "error"
 
-      if (status === "saved") {
-        // INSTANT popup — built directly from URL params, zero DB wait
+      if (status === "saved" || status === "db_error") {
+        // Decode base64 JSON blob embedded by the API - instant, no DB roundtrip
         const rows = parseShortcutRows(params);
 
         if (rows.length > 0) {
-          // Show popup immediately with whatever plate was first saved
           setSelectedPlate(rows[0].license_plate || TARGET_LICENSE_PLATES[0]);
           setShortcutPopup({ status: "saved", rows });
-
-          // Highlight those IDs once the table loads (fire-and-forget)
           const idSet = new Set(rows.map((r) => String(r.id)));
           startHighlightTimer(idSet);
         } else {
-          // IDs came through but rows array is empty — show not_found
           setShortcutPopup({ status: "not_found", rows: [] });
         }
       } else if (status === "not_found") {
         setShortcutPopup({ status: "not_found", rows: [] });
       } else {
-        // "error" or anything unexpected
+        // "error" or unknown - show not_found rather than crashing
         setShortcutPopup({ status: "not_found", rows: [] });
       }
 
-      // Load table in background — completely independent of popup display
+      // Load table in background - independent of popup
       loadAll().catch((err) => setError(err.message));
     } else {
       // Normal page load
