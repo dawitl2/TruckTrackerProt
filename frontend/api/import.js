@@ -82,9 +82,13 @@ export default async function handler(req, res) {
     const processedPlates = savedData.map(row => row.license_plate);
 
     // 🚀 NEW: Return the list of plates so the app knows exactly what to look for!
+   const ids = savedData.map(row => row.id).join(",");
+    const codes = savedData.map(row => row.arrival_code).join(",");
     return res.status(200).json({ 
       message: "Saved", 
-      saved: targetRows.length,
+      saved: savedData.length,
+      ids,
+      codes,
       plates: processedPlates 
     });
   });

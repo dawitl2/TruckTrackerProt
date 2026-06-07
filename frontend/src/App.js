@@ -264,24 +264,42 @@ function App() {
     const params = new URLSearchParams(window.location.search);
     if (params.get("from") === "shortcut") {
       window.history.replaceState({}, "", window.location.pathname);
-      const checkForRecentRows = async (attemptsLeft) => {
+      const savedIds = (params.get("ids") || "").split(",").map(s => s.trim()).filter(Boolean);
+
+      const checkForRows = async (attemptsLeft) => {
         try {
           const rows = await loadSavedRows();
           await loadSubdividers();
-          const recentRows = rows.filter((row) => TARGET_LICENSE_PLATE_SET.has(normalizePlate(row.license_plate)) && isRecentRow(row));
+
+          let recentRows = [];
+
+          if (savedIds.length > 0) {
+            // Best case: match by exact IDs passed in the URL
+            const idSet = new Set(savedIds.map(Number));
+            recentRows = rows.filter((row) =>
+              TARGET_LICENSE_PLATE_SET.has(normalizePlate(row.license_plate)) && idSet.has(row.id)
+            );
+          }
+
+          if (recentRows.length === 0) {
+            // Fallback: use time window (covers cases where IDs weren't passed)
+            recentRows = rows.filter((row) =>
+              TARGET_LICENSE_PLATE_SET.has(normalizePlate(row.license_plate)) && isRecentRow(row)
+            );
+          }
+
           if (recentRows.length > 0) {
             setSelectedPlate(recentRows[0].license_plate);
             startHighlightTimer(new Set(recentRows.map((r) => r.id)));
             setShortcutPopup({ status: "saved", rows: recentRows });
           } else if (attemptsLeft > 0) {
-            // Retry after 2 more seconds
-            setTimeout(() => checkForRecentRows(attemptsLeft - 1), 2000);
+            setTimeout(() => checkForRows(attemptsLeft - 1), 2000);
           } else {
             setShortcutPopup({ status: "not_found", rows: [] });
           }
         } catch { setShortcutPopup({ status: "not_found", rows: [] }); }
       };
-      setTimeout(() => checkForRecentRows(13), 2000);
+      setTimeout(() => checkForRows(13), 1000);
     } else {
       loadAll().catch((err) => setError(err.message));
     }
@@ -350,10 +368,13 @@ function App() {
       }));
 
       // Duplicate check
-      const dupes = findDuplicates(payload, savedRows);
+ const dupes = findDuplicates(payload, savedRows);
       if (dupes.length) {
         setError(`duplicate:${dupes.map(d => `${d.arrival_code} · ${d.arrival_date}`).join(", ")}`);
-        setSaving(false); return;
+        setSaving(false);
+        setSaveComplete(false);
+        setTargetRows(targetRows); // keep the found state so the panel stays open
+        return;
       }
 
       const response = await fetch(`${SUPABASE_URL}/rest/v1/${SUPABASE_TABLE}`, {
@@ -1092,6 +1113,11 @@ function App() {
                 ) : mobileStatus === "saved" ? (<><div className="sheet-state-icon found-icon">✓</div><strong>Saved successfully</strong></>)
                   : (<><div className="sheet-state-icon not-found-icon">✕</div><strong>No matches found</strong></>)}
             </div>
+           {error && error.startsWith("duplicate:") ? (
+              <div className="sheet-dupe-warning">
+                ⚠ Already in table: {error.replace("duplicate:", "")}
+              </div>
+            ) : null}
             {mobileStatus === "found" ? (
               <button type="button" className="sheet-action green" onClick={handleSave} disabled={saving}>
                 {saving ? "Saving…" : "Save rows"}
