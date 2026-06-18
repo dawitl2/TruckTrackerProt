@@ -3,6 +3,7 @@ const https = require("https");
 const GPS_HOST = "gps2.ztrackinsight.com";
 const GPS_ORIGIN = `https://${GPS_HOST}`;
 const PROXY_PREFIX = "/api/gps-proxy";
+const PROXY_RESOURCE_PATH = `${PROXY_PREFIX}/resource`;
 const GPS_USERNAME = "enkua";
 const GPS_PASSWORD = "E3456789";
 
@@ -14,6 +15,9 @@ const config = {
 
 function getTargetPath(req) {
   const requestUrl = new URL(req.url, `https://${req.headers.host || "localhost"}`);
+  const queryPath = requestUrl.searchParams.get("gpsPath");
+  if (queryPath) return queryPath;
+
   let pathname = requestUrl.pathname;
 
   if (pathname.startsWith(PROXY_PREFIX)) {
@@ -30,6 +34,10 @@ function getTargetPath(req) {
   return `${pathname}${requestUrl.search}`;
 }
 
+function getProxyResourceUrl(path) {
+  return `${PROXY_RESOURCE_PATH}?gpsPath=${encodeURIComponent(path)}`;
+}
+
 function rewriteProxyUrl(value) {
   if (!value) return value;
 
@@ -37,7 +45,7 @@ function rewriteProxyUrl(value) {
     const url = new URL(value, GPS_ORIGIN);
     if (url.origin !== GPS_ORIGIN) return value;
     if (url.pathname.startsWith(PROXY_PREFIX)) return `${url.pathname}${url.search}${url.hash}`;
-    return `${PROXY_PREFIX}${url.pathname}${url.search}${url.hash}`;
+    return getProxyResourceUrl(`${url.pathname}${url.search}`);
   } catch {
     return value;
   }
@@ -68,9 +76,19 @@ function rewriteHeaders(headers) {
 
 function rewriteBody(body) {
   return body
-    .replace(/(["'`])https:\/\/gps2\.ztrackinsight\.com\/(?!api\/gps-proxy\/)/g, `$1${PROXY_PREFIX}/`)
-    .replace(/(["'(=])\/(?!api\/gps-proxy\/)(assets|api|vts-tabicon|polyfills-legacy|tracking)(?=\/|[.?#"'`\s>)]|$)/g, `$1${PROXY_PREFIX}/$2`)
-    .replace(/url\((["']?)\/(?!api\/gps-proxy\/)assets\//g, `url($1${PROXY_PREFIX}/assets/`);
+    .replace(/(["'`])https:\/\/gps2\.ztrackinsight\.com(\/[^"'`\s<>)\\]*)/g, (_match, quote, path) => {
+      if (path.startsWith(PROXY_PREFIX)) return `${quote}${path}`;
+      return `${quote}${getProxyResourceUrl(path)}`;
+    })
+    .replace(/(["'(=])\/(?!api\/gps-proxy\/)(assets|vts-tabicon|polyfills-legacy)([^"'`\s<>)\\]*)/g, (_match, prefix, pathStart, pathRest) =>
+      `${prefix}${getProxyResourceUrl(`/${pathStart}${pathRest}`)}`
+    )
+    .replace(/(["'(=])\/(?!api\/gps-proxy\/)(api|tracking)(?=\/|[?#"'`\s>)]|$)([^"'`\s<>)\\]*)/g, (_match, prefix, pathStart, pathRest) =>
+      `${prefix}${PROXY_PREFIX}/${pathStart}${pathRest}`
+    )
+    .replace(/url\((["']?)\/(?!api\/gps-proxy\/)assets\/([^)"']+)/g, (_match, quote, pathRest) =>
+      `url(${quote}${getProxyResourceUrl(`/assets/${pathRest}`)}`
+    );
 }
 
 function gpsAutomationScript() {
