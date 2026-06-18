@@ -74,7 +74,7 @@ function rewriteHeaders(headers) {
   return nextHeaders;
 }
 
-function rewriteBody(body) {
+function rewriteHtmlOrCssBody(body) {
   return body
     .replace(/(["'`])https:\/\/gps2\.ztrackinsight\.com(\/[^"'`\s<>)\\]*)/g, (_match, quote, path) => {
       if (path.startsWith(PROXY_PREFIX)) return `${quote}${path}`;
@@ -88,6 +88,19 @@ function rewriteBody(body) {
     )
     .replace(/url\((["']?)\/(?!api\/gps-proxy\/)assets\/([^)"']+)/g, (_match, quote, pathRest) =>
       `url(${quote}${getProxyResourceUrl(`/assets/${pathRest}`)}`
+    );
+}
+
+function rewriteJavaScriptBody(body) {
+  return body
+    .replace(/import\((["'])\.\/([^"'`]+)\1\)/g, (_match, quote, path) =>
+      `import(${quote}${getProxyResourceUrl(`/assets/${path}`)}${quote})`
+    )
+    .replace(/(["'])assets\/([^"'`]+)\1/g, (_match, quote, path) =>
+      `${quote}${getProxyResourceUrl(`/assets/${path}`)}${quote}`
+    )
+    .replace(/(["'`])https:\/\/gps2\.ztrackinsight\.com\/assets\/([^"'`\s<>)\\]*)/g, (_match, quote, path) =>
+      `${quote}${getProxyResourceUrl(`/assets/${path}`)}`
     );
 }
 
@@ -249,7 +262,9 @@ function handler(req, res) {
         body += chunk;
       });
       proxyRes.on("end", () => {
-        let nextBody = rewriteBody(body);
+        let nextBody = contentType.includes("javascript")
+          ? rewriteJavaScriptBody(body)
+          : rewriteHtmlOrCssBody(body);
         if (contentType.includes("text/html")) {
           nextBody = nextBody.replace(/<\/body>/i, `${gpsAutomationScript()}</body>`);
         }
