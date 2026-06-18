@@ -18,6 +18,9 @@ function getTargetPath(req) {
 
   if (pathname.startsWith(PROXY_PREFIX)) {
     pathname = pathname.slice(PROXY_PREFIX.length) || "/";
+    while (pathname.startsWith(PROXY_PREFIX)) {
+      pathname = pathname.slice(PROXY_PREFIX.length) || "/";
+    }
   } else if (Array.isArray(req.query?.path)) {
     pathname = `/${req.query.path.join("/")}`;
   } else {
@@ -33,6 +36,7 @@ function rewriteProxyUrl(value) {
   try {
     const url = new URL(value, GPS_ORIGIN);
     if (url.origin !== GPS_ORIGIN) return value;
+    if (url.pathname.startsWith(PROXY_PREFIX)) return `${url.pathname}${url.search}${url.hash}`;
     return `${PROXY_PREFIX}${url.pathname}${url.search}${url.hash}`;
   } catch {
     return value;
@@ -64,13 +68,9 @@ function rewriteHeaders(headers) {
 
 function rewriteBody(body) {
   return body
-    .replace(/(["'`])https:\/\/gps2\.ztrackinsight\.com\//g, `$1${PROXY_PREFIX}/`)
-    .replace(/(["'(=])\/assets\//g, `$1${PROXY_PREFIX}/assets/`)
-    .replace(/(["'(=])\/api\//g, `$1${PROXY_PREFIX}/api/`)
-    .replace(/(["'(=])\/vts-tabicon/g, `$1${PROXY_PREFIX}/vts-tabicon`)
-    .replace(/(["'(=])\/polyfills-legacy/g, `$1${PROXY_PREFIX}/polyfills-legacy`)
-    .replace(/(["'(=])\/tracking/g, `$1${PROXY_PREFIX}/tracking`)
-    .replace(/url\((["']?)\/assets\//g, `url($1${PROXY_PREFIX}/assets/`);
+    .replace(/(["'`])https:\/\/gps2\.ztrackinsight\.com\/(?!api\/gps-proxy\/)/g, `$1${PROXY_PREFIX}/`)
+    .replace(/(["'(=])\/(?!api\/gps-proxy\/)(assets|api|vts-tabicon|polyfills-legacy|tracking)(?=\/|[.?#"'`\s>)]|$)/g, `$1${PROXY_PREFIX}/$2`)
+    .replace(/url\((["']?)\/(?!api\/gps-proxy\/)assets\//g, `url($1${PROXY_PREFIX}/assets/`);
 }
 
 function gpsAutomationScript() {
