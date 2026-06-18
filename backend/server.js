@@ -608,32 +608,4 @@ app.listen(PORT, () => {
   if (!supabase) {
     console.log("Supabase env vars are missing. Running with in-memory storage.");
   }
-
-  // Self-ping to prevent Render from sleeping (free tier spins down after 15m of inactivity)
-  const RENDER_URL = process.env.RENDER_EXTERNAL_URL || process.env.SELF_PING_URL;
-  if (RENDER_URL) {
-    const pingInterval = 5 * 60 * 1000; // 5 minutes
-    console.log(`[Self-Ping] Configured for ${RENDER_URL}`);
-    
-    // Initial ping after 30 seconds, then every 5 minutes
-    setTimeout(() => {
-      const httpLib = RENDER_URL.startsWith("https") ? require("https") : require("http");
-      httpLib.get(`${RENDER_URL}/api/health`, (res) => {
-        console.log(`[Self-Ping] Initial ping sent. Status: ${res.statusCode}`);
-      }).on("error", (err) => {
-        console.error("[Self-Ping] Initial ping error:", err.message);
-      });
-    }, 30000);
-
-    setInterval(() => {
-      const httpLib = RENDER_URL.startsWith("https") ? require("https") : require("http");
-      httpLib.get(`${RENDER_URL}/api/health`, (res) => {
-        console.log(`[Self-Ping] Periodic ping sent. Status: ${res.statusCode}`);
-      }).on("error", (err) => {
-        console.error("[Self-Ping] Periodic ping error:", err.message);
-      });
-    }, pingInterval);
-  } else {
-    console.log("[Self-Ping] Disabled (no RENDER_EXTERNAL_URL or SELF_PING_URL environment variables).");
-  }
 });

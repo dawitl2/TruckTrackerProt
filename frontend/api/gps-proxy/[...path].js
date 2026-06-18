@@ -55,9 +55,7 @@ function rewriteHeaders(headers) {
 
   if (nextHeaders["set-cookie"]) {
     nextHeaders["set-cookie"] = nextHeaders["set-cookie"].map((cookie) =>
-      cookie
-        .replace(/Domain=[^;]+;?\s*/gi, "")
-        .replace(/Secure;?\s*/gi, "")
+      cookie.replace(/Domain=[^;]+;?\s*/gi, "")
     );
   }
 
@@ -66,6 +64,7 @@ function rewriteHeaders(headers) {
 
 function rewriteBody(body) {
   return body
+    .replace(/(["'`])https:\/\/gps2\.ztrackinsight\.com\//g, `$1${PROXY_PREFIX}/`)
     .replace(/(["'(=])\/assets\//g, `$1${PROXY_PREFIX}/assets/`)
     .replace(/(["'(=])\/api\//g, `$1${PROXY_PREFIX}/api/`)
     .replace(/(["'(=])\/vts-tabicon/g, `$1${PROXY_PREFIX}/vts-tabicon`)

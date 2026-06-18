@@ -284,11 +284,8 @@ function parseShortcutRows(params) {
   }
 }
 
-const rawBackendUrl = process.env.REACT_APP_BACKEND_URL || "";
-const cleanBackendUrl = rawBackendUrl.endsWith("/") ? rawBackendUrl.slice(0, -1) : rawBackendUrl;
-
-const GPS_PROXY_ORIGIN = cleanBackendUrl || (process.env.NODE_ENV === "development" ? "http://localhost:5000" : "");
-const GPS_PROXY_PATH = cleanBackendUrl ? "/gps-proxy" : (process.env.NODE_ENV === "development" ? "/gps-proxy" : "/api/gps-proxy");
+const GPS_PROXY_ORIGIN = process.env.NODE_ENV === "development" ? "http://localhost:5000" : "";
+const GPS_PROXY_PATH = process.env.NODE_ENV === "development" ? "/gps-proxy" : "/api/gps-proxy";
 
 function getGpsTrackingUrl(plate) {
   return `${GPS_PROXY_ORIGIN}${GPS_PROXY_PATH}/tracking?plate=${encodeURIComponent(plate)}`;
@@ -424,6 +421,17 @@ function App() {
     return () => window.removeEventListener("message", handleMessage);
   }, [gpsFrameUrl, isGpsModalOpen]);
 
+  useEffect(() => {
+    if (!isGpsModalOpen || gpsFrameError || gpsStatus === "Live Tracking" || gpsStatus === "Vehicle not found") return;
+
+    const timeoutId = setTimeout(() => {
+      setGpsFrameError("GPS took too long to load. Redeploy the latest code, then try again on your phone.");
+      setGpsStatus("Connection timeout");
+    }, 25000);
+
+    return () => clearTimeout(timeoutId);
+  }, [gpsFrameError, gpsFrameUrl, gpsReloadKey, gpsStatus, isGpsModalOpen]);
+
   const clearError = () => setError("");
   const clearNotice = () => setNotice("");
 
@@ -558,25 +566,6 @@ function App() {
     // highlightedIds are already strings; row.id from Supabase may be number — normalise
     prevHighlightRef.current = highlightedIds;
   }, [highlightedIds]);
-
-  useEffect(() => {
-    // Ping backend on mount and every 5 minutes while frontend is open to wake/keep it awake
-    const pingBackend = () => {
-      const rawUrl = process.env.REACT_APP_BACKEND_URL || "";
-      const url = rawUrl.endsWith("/") ? rawUrl.slice(0, -1) : rawUrl;
-      const targetUrl = url || (process.env.NODE_ENV === "development" ? "http://localhost:5000" : "");
-      
-      if (targetUrl) {
-        fetch(`${targetUrl}/api/health`).catch((err) => {
-          console.warn("Backend ping failed:", err);
-        });
-      }
-    };
-    
-    pingBackend();
-    const interval = setInterval(pingBackend, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, []);
 
   useEffect(() => {
     const updateViewport = () => setIsMobile(window.innerWidth <= 720);
@@ -1450,8 +1439,7 @@ function App() {
                 className="gps-iframe"
                 onLoad={handleGpsFrameLoad}
                 onError={() => {
-                  const backendLoc = process.env.REACT_APP_BACKEND_URL ? "on Render" : "on port 5000";
-                  setGpsFrameError(`Could not reach the GPS proxy. Make sure the backend server ${backendLoc} is running.`);
+                  setGpsFrameError("Could not reach the GPS proxy. Make sure the backend server is running on port 5000.");
                   setGpsStatus("Connection failed");
                 }}
               />
