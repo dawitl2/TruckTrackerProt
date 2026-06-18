@@ -44,6 +44,15 @@ function formatPlateLabel(value) {
   return plate.split("/")[0] || plate;
 }
 
+function getMapPlateFormat(plate) {
+  const norm = normalizePlate(plate);
+  if (norm.includes("A06725")) return "3-A06725/3-32431";
+  if (norm.includes("A09321")) return "3-A09321/3-32669";
+  const parts = norm.split("/");
+  if (parts.length === 2) return `3-${parts[0]}/3-${parts[1]}`;
+  return norm;
+}
+
 function formatExtractionDate(date = new Date()) {
   return new Intl.DateTimeFormat("en-CA").format(date);
 }
@@ -275,6 +284,20 @@ function parseShortcutRows(params) {
   }
 }
 
+const GPS_PROXY_ORIGIN = process.env.NODE_ENV === "development" ? "http://localhost:5000" : "";
+const GPS_PROXY_PATH = process.env.NODE_ENV === "development" ? "/gps-proxy" : "/api/gps-proxy";
+
+function getGpsTrackingUrl(plate) {
+  return `${GPS_PROXY_ORIGIN}${GPS_PROXY_PATH}/tracking?plate=${encodeURIComponent(plate)}`;
+}
+
+function getStatusClass(status) {
+  return String(status || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 function App() {
   const [file, setFile] = useState(null);
   const [savedRows, setSavedRows] = useState([]);
@@ -333,6 +356,70 @@ function App() {
   const PULL_THRESHOLD = 72;
 
   const fileInputRef = useRef(null);
+
+  const [isGpsModalOpen, setIsGpsModalOpen] = useState(false);
+  const [gpsStatus, setGpsStatus] = useState("Initializing...");
+  const [gpsFrameError, setGpsFrameError] = useState("");
+  const [gpsReloadKey, setGpsReloadKey] = useState(0);
+  const gpsPlate = getMapPlateFormat(selectedPlate);
+  const gpsFrameUrl = getGpsTrackingUrl(gpsPlate);
+  const gpsStatusClass = getStatusClass(gpsStatus);
+
+  const openGpsModal = () => {
+    setGpsFrameError("");
+    setGpsStatus("Connecting...");
+    setIsGpsModalOpen(true);
+  };
+
+  const closeGpsModal = () => {
+    setIsGpsModalOpen(false);
+    setGpsFrameError("");
+  };
+
+  const retryGpsPanel = () => {
+    setGpsFrameError("");
+    setGpsStatus("Connecting...");
+    setGpsReloadKey((key) => key + 1);
+  };
+
+  const handleGpsFrameLoad = (event) => {
+    try {
+      const iframe = event.currentTarget;
+      const doc = iframe.contentDocument;
+      const title = doc?.title || "";
+      const isTruckTrackerFallback = title.includes("Truck Tracker") || Boolean(doc?.querySelector(".brand-logo"));
+
+      if (isTruckTrackerFallback) {
+        setGpsFrameError("GPS proxy is not running. Start the backend server, then try Location again.");
+        setGpsStatus("Proxy unavailable");
+      }
+    } catch {
+      // Cross-origin access can fail before the proxy rewrites the page. The status listener still handles success.
+    }
+  };
+
+  // Live GPS Tracking Iframe Status Listener
+  useEffect(() => {
+    if (!isGpsModalOpen) {
+      setGpsStatus("Closed");
+      return;
+    }
+
+    setGpsStatus("Connecting...");
+
+    const handleMessage = (event) => {
+      const allowedOrigin = new URL(gpsFrameUrl, window.location.href).origin;
+      if (event.origin !== window.location.origin && event.origin !== allowedOrigin) return;
+
+      if (event.data && event.data.type === "GPS_STATUS") {
+        setGpsStatus(event.data.status);
+        if (event.data.status !== "Proxy unavailable") setGpsFrameError("");
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, [gpsFrameUrl, isGpsModalOpen]);
 
   const clearError = () => setError("");
   const clearNotice = () => setNotice("");
@@ -1154,7 +1241,18 @@ function App() {
               <p className="driver-name">{currentDriver.name}</p>
               <p className="driver-plate">{formatPlateLabel(selectedPlate)}</p>
             </div>
-            <div className="driver-badge">D{currentDriver.id}</div>
+            <button
+              type="button"
+              className="driver-location-btn"
+              onClick={openGpsModal}
+              aria-label={`Track ${gpsPlate}`}
+              title="Track vehicle location"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="location-icon">
+                <path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0z" />
+                <circle cx="12" cy="10" r="3" />
+              </svg>
+            </button>
           </div>
 
           <div className="table-wrap">
@@ -1289,6 +1387,52 @@ function App() {
               </button>
             ) : null}
             <button type="button" className="sheet-action" onClick={resetScanState}>Dismiss</button>
+          </div>
+        </div>
+      ) : null}
+
+      {isGpsModalOpen ? (
+        <div className="gps-modal-overlay" onClick={closeGpsModal}>
+          <div className="gps-modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="gps-modal-header">
+              <div className="gps-modal-title-group">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="location-icon-animated">
+                  <path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0z" />
+                  <circle cx="12" cy="10" r="3" />
+                </svg>
+                <div className="gps-modal-title-details">
+                  <h3>Live GPS Tracking</h3>
+                  <span className="gps-modal-plate">{gpsPlate}</span>
+                </div>
+              </div>
+              <div className="gps-modal-controls">
+                <span className={`gps-status-badge status-${gpsStatusClass}`}>
+                  {gpsStatus}
+                </span>
+                <button type="button" className="gps-modal-close" onClick={closeGpsModal} title="Close tracking panel">✕</button>
+              </div>
+            </div>
+            <div className="gps-modal-body">
+              {gpsFrameError ? (
+                <div className="gps-panel-message" role="alert">
+                  <strong>Location panel could not open GPS</strong>
+                  <p>{gpsFrameError}</p>
+                  <button type="button" onClick={retryGpsPanel}>Retry</button>
+                </div>
+              ) : null}
+              <iframe
+                key={`${gpsFrameUrl}-${gpsReloadKey}`}
+                id="gps-iframe"
+                src={gpsFrameUrl}
+                title="GPS Live Tracking Portal"
+                className="gps-iframe"
+                onLoad={handleGpsFrameLoad}
+                onError={() => {
+                  setGpsFrameError("Could not reach the GPS proxy. Make sure the backend server is running on port 5000.");
+                  setGpsStatus("Connection failed");
+                }}
+              />
+            </div>
           </div>
         </div>
       ) : null}

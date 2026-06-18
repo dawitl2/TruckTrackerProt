@@ -45,6 +45,216 @@ app.use(
     origin: allowedOrigins.length ? allowedOrigins : true
   })
 );
+
+// GPS Live Tracking Reverse Proxy Middleware to bypass Same-Origin Policy
+app.use((req, res, next) => {
+  const isGpsProxy = req.url.startsWith("/gps-proxy");
+  const isRefererGps = req.headers.referer && req.headers.referer.includes("/gps-proxy/");
+  const isExplicitAsset = req.url.startsWith("/assets/") || req.url.startsWith("/vts-tabicon") || req.url.startsWith("/polyfills-legacy");
+
+  if (isGpsProxy || isRefererGps || isExplicitAsset) {
+    let targetPath = req.url;
+    if (targetPath.startsWith("/gps-proxy")) {
+      targetPath = targetPath.replace("/gps-proxy", "");
+      if (!targetPath.startsWith("/")) {
+        targetPath = "/" + targetPath;
+      }
+    }
+
+    const https = require("https");
+    const options = {
+      hostname: "gps2.ztrackinsight.com",
+      port: 443,
+      path: targetPath,
+      method: req.method,
+      headers: {
+        ...req.headers,
+        host: "gps2.ztrackinsight.com",
+        referer: "https://gps2.ztrackinsight.com/tracking",
+        origin: "https://gps2.ztrackinsight.com"
+      }
+    };
+
+    // Remove headers that might cause security or redirection issues
+    delete options.headers["sec-fetch-site"];
+    delete options.headers["sec-fetch-mode"];
+    delete options.headers["sec-fetch-dest"];
+    
+    // Disable compression so we can intercept and parse HTML as plain text
+    delete options.headers["accept-encoding"];
+
+    const proxyReq = https.request(options, (proxyRes) => {
+      // Clean up framing restriction headers so the browser allows the iframe to render
+      delete proxyRes.headers["x-frame-options"];
+      delete proxyRes.headers["content-security-policy"];
+      delete proxyRes.headers["x-content-type-options"];
+
+      // Rewrite Set-Cookie domains to allow localhost session persistence
+      if (proxyRes.headers["set-cookie"]) {
+        const cookies = proxyRes.headers["set-cookie"].map((cookie) => {
+          return cookie
+            .replace(/Domain=[^;]+;?\s*/gi, "")
+            .replace(/Secure;?\s*/gi, "");
+        });
+        proxyRes.headers["set-cookie"] = cookies;
+      }
+
+      const contentType = proxyRes.headers["content-type"] || "";
+      const isHtml = contentType.includes("text/html");
+
+      if (isHtml) {
+        let body = "";
+        proxyRes.on("data", (chunk) => {
+          body += chunk.toString("utf8");
+        });
+        proxyRes.on("end", () => {
+          // Automation script to inject inside the iframe same-origin context
+          const scriptToInject = `
+<script>
+(function() {
+  console.log("GPS Auto-Login & Navigation Script Active");
+  
+  // Post initial status
+  window.parent.postMessage({ type: 'GPS_STATUS', status: 'Connecting...' }, '*');
+  
+  // Get plate from query params
+  const urlParams = new URLSearchParams(window.location.search);
+  const targetPlate = urlParams.get('plate');
+  console.log("Target vehicle plate:", targetPlate);
+
+  const setNativeValue = (element, value) => {
+    const valueSetter = Object.getOwnPropertyDescriptor(element, 'value')?.set;
+    const prototype = Object.getPrototypeOf(element);
+    const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    
+    if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
+      prototypeValueSetter.call(element, value);
+    } else if (valueSetter) {
+      valueSetter.call(element, value);
+    } else {
+      element.value = value;
+    }
+  };
+
+  let searchAttempts = 0;
+
+  const intervalId = setInterval(() => {
+    try {
+      // 1. Check for Login page
+      const usernameInput = document.getElementById("username");
+      const passwordInput = document.getElementById("password");
+      const submitBtn = document.querySelector("button[type='submit']");
+
+      if (usernameInput && passwordInput && submitBtn) {
+        window.parent.postMessage({ type: 'GPS_STATUS', status: 'Logging in...' }, '*');
+        if (usernameInput.value !== "enkua") {
+          setNativeValue(usernameInput, "enkua");
+          usernameInput.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+        if (passwordInput.value !== "E3456789") {
+          setNativeValue(passwordInput, "E3456789");
+          passwordInput.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+
+        if (usernameInput.value === "enkua" && passwordInput.value === "E3456789") {
+          console.log("Submitting login form...");
+          window.parent.postMessage({ type: 'GPS_STATUS', status: 'Authenticating...' }, '*');
+          submitBtn.click();
+        }
+        return;
+      }
+
+      // 2. Check for Dashboard and search input
+      const searchInput = document.querySelector("input[placeholder*='Search']");
+      if (searchInput && targetPlate) {
+        if (window.__lastSelectedPlate !== targetPlate) {
+          window.parent.postMessage({ type: 'GPS_STATUS', status: 'Locating vehicle...' }, '*');
+          if (searchInput.value !== targetPlate) {
+            setNativeValue(searchInput, targetPlate);
+            searchInput.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+
+          // Click the matching vehicle button
+          const buttons = Array.from(document.querySelectorAll("button"));
+          const match = buttons.find(b => b.textContent && b.textContent.includes(targetPlate));
+          if (match) {
+            match.click();
+            window.__lastSelectedPlate = targetPlate;
+            console.log("Clicked matching vehicle:", targetPlate);
+            window.parent.postMessage({ type: 'GPS_STATUS', status: 'Live Tracking' }, '*');
+          } else {
+            searchAttempts++;
+            if (searchAttempts > 15) {
+              window.parent.postMessage({ type: 'GPS_STATUS', status: 'Vehicle not found' }, '*');
+            }
+          }
+        } else {
+          window.parent.postMessage({ type: 'GPS_STATUS', status: 'Live Tracking' }, '*');
+        }
+        
+        // 3. Switch to Satellite View
+        const layersToggle = document.querySelector('.leaflet-control-layers-toggle');
+        if (layersToggle && !window.__switchedToSatellite) {
+          // Open layers control
+          layersToggle.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+          layersToggle.click();
+          
+          setTimeout(() => {
+            const selectors = Array.from(document.querySelectorAll('.leaflet-control-layers-selector, label, span'));
+            const satLabel = selectors.find(el => {
+              const text = el.textContent?.toLowerCase() || '';
+              return text.includes('sat') || text.includes('hyb') || text.includes('aerial') || text.includes('sate');
+            });
+            
+            if (satLabel) {
+              const input = satLabel.tagName === 'INPUT' ? satLabel : satLabel.querySelector('input') || satLabel.parentElement.querySelector('input');
+              if (input && !input.checked) {
+                input.click();
+                window.__switchedToSatellite = true;
+                console.log("Switched to satellite view");
+              } else if (satLabel.tagName !== 'INPUT') {
+                satLabel.click();
+                window.__switchedToSatellite = true;
+                console.log("Clicked satellite label");
+              }
+            }
+          }, 500);
+        }
+      }
+    } catch (err) {
+      console.error("Auto-login script error:", err);
+      window.parent.postMessage({ type: 'GPS_STATUS', status: 'Error' }, '*');
+    }
+  }, 1000);
+})();
+</script>
+`;
+          const injectedBody = body.replace(/<\/body>/i, `${scriptToInject}</body>`);
+          
+          if (proxyRes.headers["content-length"]) {
+            proxyRes.headers["content-length"] = Buffer.byteLength(injectedBody);
+          }
+          
+          res.writeHead(proxyRes.statusCode, proxyRes.headers);
+          res.end(injectedBody);
+        });
+      } else {
+        res.writeHead(proxyRes.statusCode, proxyRes.headers);
+        proxyRes.pipe(res, { end: true });
+      }
+    });
+
+    proxyReq.on("error", (err) => {
+      console.error("GPS Proxy Error:", err);
+      res.status(500).send("GPS Proxy error: " + err.message);
+    });
+
+    req.pipe(proxyReq, { end: true });
+  } else {
+    next();
+  }
+});
+
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
 
