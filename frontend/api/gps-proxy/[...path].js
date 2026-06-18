@@ -67,10 +67,56 @@ function rewriteHeaders(headers) {
 function rewriteBody(body) {
   return body
     .replace(/(["'(=])\/assets\//g, `$1${PROXY_PREFIX}/assets/`)
+    .replace(/(["'(=])\/api\//g, `$1${PROXY_PREFIX}/api/`)
     .replace(/(["'(=])\/vts-tabicon/g, `$1${PROXY_PREFIX}/vts-tabicon`)
     .replace(/(["'(=])\/polyfills-legacy/g, `$1${PROXY_PREFIX}/polyfills-legacy`)
     .replace(/(["'(=])\/tracking/g, `$1${PROXY_PREFIX}/tracking`)
     .replace(/url\((["']?)\/assets\//g, `url($1${PROXY_PREFIX}/assets/`);
+}
+
+function gpsRequestPatchScript() {
+  return `
+<script>
+(function() {
+  var proxyPrefix = "${PROXY_PREFIX}";
+  var gpsOrigin = "${GPS_ORIGIN}";
+
+  function proxiedUrl(input) {
+    if (!input || typeof input !== "string") return input;
+    if (input.indexOf(proxyPrefix + "/") === 0) return input;
+
+    try {
+      var url = new URL(input, window.location.origin);
+      if (url.origin === window.location.origin && url.pathname.indexOf(proxyPrefix + "/") !== 0) {
+        return proxyPrefix + url.pathname + url.search + url.hash;
+      }
+      if (url.origin === gpsOrigin) {
+        return proxyPrefix + url.pathname + url.search + url.hash;
+      }
+    } catch (error) {}
+
+    return input;
+  }
+
+  var originalFetch = window.fetch;
+  if (originalFetch) {
+    window.fetch = function(resource, init) {
+      if (typeof resource === "string") {
+        resource = proxiedUrl(resource);
+      } else if (resource && resource.url) {
+        resource = new Request(proxiedUrl(resource.url), resource);
+      }
+      return originalFetch.call(this, resource, init);
+    };
+  }
+
+  var originalOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url) {
+    arguments[1] = proxiedUrl(url);
+    return originalOpen.apply(this, arguments);
+  };
+})();
+</script>`;
 }
 
 function gpsAutomationScript() {
@@ -98,6 +144,27 @@ function gpsAutomationScript() {
 
   function notify(status) {
     window.parent.postMessage({ type: "GPS_STATUS", status: status }, "*");
+  }
+
+  function closeMapPanels() {
+    var closeButtons = Array.from(document.querySelectorAll(
+      "button[aria-label*='Close'], button[title*='Close'], button[aria-label*='close'], button[title*='close']"
+    ));
+    closeButtons.forEach(function(button) {
+      var area = button.closest("[role='dialog'], [data-vaul-drawer], aside, section, div");
+      var text = (area && area.textContent || "").toLowerCase();
+      if (text.includes("alert") || text.includes("alarm") || text.includes("vehicle") || text.includes("notification")) {
+        button.click();
+      }
+    });
+
+    Array.from(document.querySelectorAll("[data-vaul-drawer], aside, [role='dialog']")).forEach(function(panel) {
+      var text = (panel.textContent || "").toLowerCase();
+      var isMapControl = panel.closest(".leaflet-container") || panel.querySelector(".leaflet-container");
+      if (!isMapControl && (text.includes("alert") || text.includes("alarm") || text.includes("notification"))) {
+        panel.style.display = "none";
+      }
+    });
   }
 
   setInterval(function() {
@@ -148,12 +215,15 @@ function gpsAutomationScript() {
         if (match) {
           match.click();
           window.__lastSelectedPlate = targetPlate;
+          setTimeout(closeMapPanels, 700);
+          setTimeout(closeMapPanels, 1800);
           notify("Live Tracking");
         } else {
           searchAttempts += 1;
           if (searchAttempts > 15) notify("Vehicle not found");
         }
       } else {
+        closeMapPanels();
         notify("Live Tracking");
       }
     } catch (error) {
@@ -209,7 +279,9 @@ function handler(req, res) {
       proxyRes.on("end", () => {
         let nextBody = rewriteBody(body);
         if (contentType.includes("text/html")) {
-          nextBody = nextBody.replace(/<\/body>/i, `${gpsAutomationScript()}</body>`);
+          nextBody = nextBody
+            .replace(/<\/head>/i, `${gpsRequestPatchScript()}</head>`)
+            .replace(/<\/body>/i, `${gpsAutomationScript()}</body>`);
         }
         res.writeHead(proxyRes.statusCode || 200, responseHeaders);
         res.end(nextBody);
