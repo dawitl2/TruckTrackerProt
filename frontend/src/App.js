@@ -425,7 +425,7 @@ function App() {
     if (!isGpsModalOpen || gpsFrameError || gpsStatus === "Live Tracking" || gpsStatus === "Vehicle not found") return;
 
     const timeoutId = setTimeout(() => {
-      setGpsFrameError("GPS took too long to load. Redeploy the latest code, then try again on your phone.");
+      setGpsFrameError("GPS took too long to load. Close the panel and try again.");
       setGpsStatus("Connection timeout");
     }, 25000);
 
@@ -1439,7 +1439,11 @@ function App() {
                 className="gps-iframe"
                 onLoad={handleGpsFrameLoad}
                 onError={() => {
-                  setGpsFrameError("Could not reach the GPS proxy. Make sure the backend server is running on port 5000.");
+                  setGpsFrameError(
+                    process.env.NODE_ENV === "development"
+                      ? "Could not reach the GPS proxy. Start the backend server on port 5000."
+                      : "Could not reach the GPS proxy. Try again after redeploying."
+                  );
                   setGpsStatus("Connection failed");
                 }}
               />

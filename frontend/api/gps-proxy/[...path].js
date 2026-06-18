@@ -73,51 +73,6 @@ function rewriteBody(body) {
     .replace(/url\((["']?)\/assets\//g, `url($1${PROXY_PREFIX}/assets/`);
 }
 
-function gpsRequestPatchScript() {
-  return `
-<script>
-(function() {
-  var proxyPrefix = "${PROXY_PREFIX}";
-  var gpsOrigin = "${GPS_ORIGIN}";
-
-  function proxiedUrl(input) {
-    if (!input || typeof input !== "string") return input;
-    if (input.indexOf(proxyPrefix + "/") === 0) return input;
-
-    try {
-      var url = new URL(input, window.location.origin);
-      if (url.origin === window.location.origin && url.pathname.indexOf(proxyPrefix + "/") !== 0) {
-        return proxyPrefix + url.pathname + url.search + url.hash;
-      }
-      if (url.origin === gpsOrigin) {
-        return proxyPrefix + url.pathname + url.search + url.hash;
-      }
-    } catch (error) {}
-
-    return input;
-  }
-
-  var originalFetch = window.fetch;
-  if (originalFetch) {
-    window.fetch = function(resource, init) {
-      if (typeof resource === "string") {
-        resource = proxiedUrl(resource);
-      } else if (resource && resource.url) {
-        resource = new Request(proxiedUrl(resource.url), resource);
-      }
-      return originalFetch.call(this, resource, init);
-    };
-  }
-
-  var originalOpen = XMLHttpRequest.prototype.open;
-  XMLHttpRequest.prototype.open = function(method, url) {
-    arguments[1] = proxiedUrl(url);
-    return originalOpen.apply(this, arguments);
-  };
-})();
-</script>`;
-}
-
 function gpsAutomationScript() {
   return `
 <script>
@@ -278,9 +233,7 @@ function handler(req, res) {
       proxyRes.on("end", () => {
         let nextBody = rewriteBody(body);
         if (contentType.includes("text/html")) {
-          nextBody = nextBody
-            .replace(/<\/head>/i, `${gpsRequestPatchScript()}</head>`)
-            .replace(/<\/body>/i, `${gpsAutomationScript()}</body>`);
+          nextBody = nextBody.replace(/<\/body>/i, `${gpsAutomationScript()}</body>`);
         }
         res.writeHead(proxyRes.statusCode || 200, responseHeaders);
         res.end(nextBody);
