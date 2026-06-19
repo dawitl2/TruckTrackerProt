@@ -298,6 +298,288 @@ function getStatusClass(status) {
     .replace(/^-+|-+$/g, "");
 }
 
+const ROUTE_SPEED_KMH = 70;
+const ROUTE_NODES = {
+  start: {
+    name: "TotalEnergies Bole Road Service Station",
+    shortName: "Bole Road",
+    location: "Bole, Addis Ababa, Ethiopia",
+    latitude: 9.0012,
+    longitude: 38.7857
+  },
+  destination: {
+    name: "Horizon Djibouti Terminals Limited (HDTL)",
+    shortName: "HDTL",
+    location: "Doraleh Port, Djibouti City, Djibouti",
+    latitude: 11.59,
+    longitude: 43.08
+  }
+};
+
+const ROUTE_WAYPOINTS = [
+  { name: "Bole, Addis Ababa", country: "Ethiopia", latitude: 9.0012, longitude: 38.7857 },
+  { name: "Mojo", country: "Ethiopia", latitude: 8.5868, longitude: 39.1211 },
+  { name: "Metehara", country: "Ethiopia", latitude: 8.9, longitude: 39.9167 },
+  { name: "Awash", country: "Ethiopia", latitude: 8.9833, longitude: 40.1667 },
+  { name: "Mille", country: "Ethiopia", latitude: 11.4127, longitude: 40.9751 },
+  { name: "Semera", country: "Ethiopia", latitude: 11.7934, longitude: 41.0058 },
+  { name: "Galafi Border", country: "Djibouti", latitude: 11.7167, longitude: 41.8667 },
+  { name: "Dikhil", country: "Djibouti", latitude: 11.1046, longitude: 42.3722 },
+  { name: "Doraleh Port", country: "Djibouti", latitude: 11.59, longitude: 43.08 }
+];
+
+function toRad(value) {
+  return value * Math.PI / 180;
+}
+
+function toDeg(value) {
+  return value * 180 / Math.PI;
+}
+
+function asCoordinate(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function isValidCoordinate(latitude, longitude) {
+  return latitude !== null && longitude !== null && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180;
+}
+
+function distanceKm(a, b) {
+  const radiusKm = 6371;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLon = toRad(b.longitude - a.longitude);
+  const lat1 = toRad(a.latitude);
+  const lat2 = toRad(b.latitude);
+  const hav =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+
+  return radiusKm * 2 * Math.atan2(Math.sqrt(hav), Math.sqrt(1 - hav));
+}
+
+function bearingDegrees(a, b) {
+  const lat1 = toRad(a.latitude);
+  const lat2 = toRad(b.latitude);
+  const dLon = toRad(b.longitude - a.longitude);
+  const y = Math.sin(dLon) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+function angleDelta(a, b) {
+  return Math.abs(((a - b + 540) % 360) - 180);
+}
+
+function formatDistance(km) {
+  if (!Number.isFinite(km)) return "-";
+  return `${Math.max(0, Math.round(km)).toLocaleString()} km`;
+}
+
+function formatDurationFromHours(hours) {
+  if (!Number.isFinite(hours)) return "-";
+  const wholeHours = Math.floor(hours);
+  const minutes = Math.round((hours - wholeHours) * 60);
+  if (wholeHours <= 0) return `${Math.max(1, minutes)} min`;
+  return `${wholeHours}h ${minutes.toString().padStart(2, "0")}m`;
+}
+
+function formatCoordinatePair(latitude, longitude) {
+  const latSuffix = latitude >= 0 ? "N" : "S";
+  const lngSuffix = longitude >= 0 ? "E" : "W";
+  return `${Math.abs(latitude).toFixed(4)} ${latSuffix}, ${Math.abs(longitude).toFixed(4)} ${lngSuffix}`;
+}
+
+function getNearestRoutePlace(point) {
+  if (!point) return ROUTE_WAYPOINTS[0];
+  return ROUTE_WAYPOINTS.reduce((nearest, place) => {
+    const placeDistance = distanceKm(point, place);
+    if (!nearest || placeDistance < nearest.distanceKm) return { ...place, distanceKm: placeDistance };
+    return nearest;
+  }, null);
+}
+
+function getPlaceImageUrl(placeName) {
+  const cleanedPlace = cleanCell(placeName)
+    .replace(/\b(NA|N\/A|Live Tracking|Vehicle)\b/gi, "")
+    .slice(0, 120)
+    .trim();
+  const query = encodeURIComponent(`${cleanedPlace || "Ethiopia Djibouti highway"} road place`);
+  return `https://source.unsplash.com/featured/640x360/?${query}`;
+}
+
+function getGpsPlaceLabel(rawLabel, nearestPlace) {
+  const fallback = `Near ${nearestPlace.name}`;
+  const text = cleanCell(rawLabel || "");
+  if (!text) return fallback;
+
+  const locationMatch = text.match(/Location\s+(.+?)\s+(?:Timestamp|Company|Driver|Driver Phone|Device Phone|Device IMEI|Coordinates|Follow|History|Best View|Stoppages|$)/i);
+  const candidate = cleanCell(locationMatch ? locationMatch[1] : text)
+    .replace(/^Location\s*/i, "")
+    .replace(/\b(?:moving|stopped|idle|online|offline)\b/gi, "")
+    .trim();
+
+  if (!candidate || /live tracking|vehicle|speed|ignition/i.test(candidate)) return fallback;
+  return candidate.length > 92 ? `${candidate.slice(0, 89).trim()}...` : candidate;
+}
+
+function compactGpsText(value) {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function gpsTextMatchesPlate(text, plate) {
+  const source = String(text || "");
+  const compactSource = compactGpsText(source);
+  const compactPlate = compactGpsText(plate);
+  return Boolean(
+    plate &&
+    (source.includes(plate) || (compactPlate && compactSource.includes(compactPlate)))
+  );
+}
+
+function parseGpsCoordinateText(text) {
+  const source = String(text || "").replace(/\s+/g, " ");
+  const explicitCopyMatch = source.match(/handleCopyCoords\([^0-9-]*(-?\d{1,2}\.\d{3,})\s*,\s*(-?\d{1,3}\.\d{3,})/i);
+  const match = explicitCopyMatch || source.match(/(?:Coordinates\s*)?(-?\d{1,2}\.\d{3,})\s*(?:°)?\s*([NS])?[,;\s]+(-?\d{1,3}\.\d{3,})\s*(?:°)?\s*([EW])?/i);
+  if (!match) return null;
+
+  let latitude = asCoordinate(match[1]);
+  let longitude = asCoordinate(explicitCopyMatch ? match[2] : match[3]);
+  if (!explicitCopyMatch && match[2] && match[2].toUpperCase() === "S") latitude = -Math.abs(latitude);
+  if (!explicitCopyMatch && match[4] && match[4].toUpperCase() === "W") longitude = -Math.abs(longitude);
+
+  return isValidCoordinate(latitude, longitude) ? { latitude, longitude } : null;
+}
+
+function getElementSearchText(element) {
+  if (!element) return "";
+  const attrText = Array.from(element.querySelectorAll?.("[onclick], [title], [aria-label]") || [])
+    .map((node) => [
+      node.getAttribute("onclick"),
+      node.getAttribute("title"),
+      node.getAttribute("aria-label")
+    ].filter(Boolean).join(" "))
+    .join(" ");
+
+  return `${element.innerText || ""} ${element.textContent || ""} ${attrText}`;
+}
+
+function extractGpsLocationLabelFromText(text) {
+  const lines = String(text || "")
+    .split(/\n+/)
+    .map((line) => cleanCell(line))
+    .filter(Boolean);
+  const labelWords = /^(speed|ignition|location|timestamp|company|driver|driver phone|device phone|device imei|coordinates|follow|history|best view|stoppages)$/i;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!/location/i.test(line)) continue;
+
+    const sameLine = cleanCell(line.replace(/^.*?\bLocation\b/i, ""));
+    if (sameLine && !labelWords.test(sameLine)) return sameLine.slice(0, 220);
+
+    const next = lines.slice(index + 1).find((candidate) => !labelWords.test(candidate));
+    if (next) return next.slice(0, 220);
+  }
+
+  const compactText = cleanCell(String(text || "").replace(/\s+/g, " "));
+  const match = compactText.match(/Location\s+(.+?)\s+(?:Timestamp|Company|Driver|Driver Phone|Device Phone|Device IMEI|Coordinates|Follow|History|Best View|Stoppages|$)/i);
+  return match ? match[1].trim().slice(0, 220) : "";
+}
+
+function scrapeGpsDocument(doc, targetPlate) {
+  if (!doc?.body) return null;
+
+  const selectors = [
+    ".leaflet-popup-content",
+    ".custom-vehicle-popup",
+    ".leaflet-popup",
+    "[class*='vehicle']",
+    "[class*='detail']",
+    "body"
+  ].join(", ");
+
+  const candidates = Array.from(doc.querySelectorAll(selectors))
+    .filter((element) => {
+      const text = getElementSearchText(element);
+      return gpsTextMatchesPlate(text, targetPlate) || /Coordinates/i.test(text);
+    })
+    .sort((a, b) => {
+      const aText = getElementSearchText(a);
+      const bText = getElementSearchText(b);
+      const aScore = (a.matches(".leaflet-popup-content") ? 100 : 0) + (gpsTextMatchesPlate(aText, targetPlate) ? 50 : 0);
+      const bScore = (b.matches(".leaflet-popup-content") ? 100 : 0) + (gpsTextMatchesPlate(bText, targetPlate) ? 50 : 0);
+      return bScore - aScore;
+    });
+
+  for (const element of candidates) {
+    const text = getElementSearchText(element);
+    const coordinates = parseGpsCoordinateText(text);
+    if (coordinates) {
+      return {
+        ...coordinates,
+        label: extractGpsLocationLabelFromText(element.innerText || element.textContent || text)
+      };
+    }
+  }
+
+  return null;
+}
+
+function buildRouteInsight(location, previousLocation) {
+  const totalKm = distanceKm(ROUTE_NODES.start, ROUTE_NODES.destination);
+  const base = {
+    hasLiveLocation: false,
+    start: ROUTE_NODES.start,
+    destination: ROUTE_NODES.destination,
+    directionLabel: "Opening GPS direction",
+    distanceLeft: "-",
+    timeLeft: "-",
+    progress: 0,
+    placeLabel: "Opening truck location",
+    placeDetail: "The panel will calculate distance and time when GPS sends coordinates.",
+    imageUrl: getPlaceImageUrl("Bole Addis Ababa fuel station")
+  };
+
+  const latitude = asCoordinate(location?.latitude);
+  const longitude = asCoordinate(location?.longitude);
+  if (!isValidCoordinate(latitude, longitude)) return base;
+
+  const point = { latitude, longitude };
+  const forwardBearing = bearingDegrees(ROUTE_NODES.start, ROUTE_NODES.destination);
+  const reverseBearing = (forwardBearing + 180) % 360;
+  let heading = asCoordinate(location?.heading);
+
+  const prevLat = asCoordinate(previousLocation?.latitude);
+  const prevLng = asCoordinate(previousLocation?.longitude);
+  if (heading === null && isValidCoordinate(prevLat, prevLng) && distanceKm({ latitude: prevLat, longitude: prevLng }, point) >= 0.05) {
+    heading = bearingDegrees({ latitude: prevLat, longitude: prevLng }, point);
+  }
+
+  const isReturnTrip = heading !== null && angleDelta(heading, reverseBearing) < angleDelta(heading, forwardBearing);
+  const routeStart = isReturnTrip ? ROUTE_NODES.destination : ROUTE_NODES.start;
+  const routeDestination = isReturnTrip ? ROUTE_NODES.start : ROUTE_NODES.destination;
+  const remainingKm = distanceKm(point, routeDestination);
+  const completedPercent = Math.min(100, Math.max(0, (1 - remainingKm / totalKm) * 100));
+  const nearestPlace = getNearestRoutePlace(point);
+  const placeLabel = getGpsPlaceLabel(location?.label, nearestPlace);
+
+  return {
+    hasLiveLocation: true,
+    start: routeStart,
+    destination: routeDestination,
+    directionLabel: heading === null ? "Outbound estimate to Doraleh" : (isReturnTrip ? "Return to Addis Ababa" : "Outbound to Doraleh"),
+    directionConfidence: heading === null ? "Direction refines when GPS heading appears" : `${Math.round(heading)} deg heading`,
+    distanceLeft: formatDistance(remainingKm),
+    timeLeft: formatDurationFromHours(remainingKm / ROUTE_SPEED_KMH),
+    progress: completedPercent,
+    placeLabel,
+    placeDetail: formatCoordinatePair(latitude, longitude),
+    imageUrl: getPlaceImageUrl(placeLabel)
+  };
+}
+
 function App() {
   const [file, setFile] = useState(null);
   const [savedRows, setSavedRows] = useState([]);
@@ -361,13 +643,18 @@ function App() {
   const [gpsStatus, setGpsStatus] = useState("Initializing...");
   const [gpsFrameError, setGpsFrameError] = useState("");
   const [gpsReloadKey, setGpsReloadKey] = useState(0);
+  const [gpsLocation, setGpsLocation] = useState(null);
+  const previousGpsLocationRef = useRef(null);
   const gpsPlate = getMapPlateFormat(selectedPlate);
   const gpsFrameUrl = getGpsTrackingUrl(gpsPlate);
   const gpsStatusClass = getStatusClass(gpsStatus);
+  const routeInsight = buildRouteInsight(gpsLocation, previousGpsLocationRef.current);
 
   const openGpsModal = () => {
     setGpsFrameError("");
     setGpsStatus("Connecting...");
+    setGpsLocation(null);
+    previousGpsLocationRef.current = null;
     setIsGpsModalOpen(true);
   };
 
@@ -415,11 +702,70 @@ function App() {
         setGpsStatus(event.data.status);
         if (event.data.status !== "Proxy unavailable") setGpsFrameError("");
       }
+
+      if (event.data && event.data.type === "GPS_LOCATION") {
+        const latitude = asCoordinate(event.data.latitude);
+        const longitude = asCoordinate(event.data.longitude);
+        if (isValidCoordinate(latitude, longitude)) {
+          setGpsLocation((current) => {
+            previousGpsLocationRef.current = current;
+            return {
+              latitude,
+              longitude,
+              heading: asCoordinate(event.data.heading),
+              label: cleanCell(event.data.label || ""),
+              receivedAt: Date.now()
+            };
+          });
+        }
+      }
     };
 
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
   }, [gpsFrameUrl, isGpsModalOpen]);
+
+  useEffect(() => {
+    if (!isGpsModalOpen) return;
+
+    const scrapeFrame = () => {
+      try {
+        const iframe = document.getElementById("gps-iframe");
+        const doc = iframe?.contentDocument || iframe?.contentWindow?.document;
+        const scrapedLocation = scrapeGpsDocument(doc, gpsPlate);
+        if (!scrapedLocation) return;
+
+        setGpsLocation((current) => {
+          if (
+            current &&
+            current.latitude === scrapedLocation.latitude &&
+            current.longitude === scrapedLocation.longitude &&
+            cleanCell(current.label) === cleanCell(scrapedLocation.label)
+          ) {
+            return current;
+          }
+
+          previousGpsLocationRef.current = current;
+          return {
+            latitude: scrapedLocation.latitude,
+            longitude: scrapedLocation.longitude,
+            heading: asCoordinate(scrapedLocation.heading),
+            label: cleanCell(scrapedLocation.label || ""),
+            receivedAt: Date.now()
+          };
+        });
+
+        setGpsStatus("Live Tracking");
+        setGpsFrameError("");
+      } catch {
+        // The iframe should be same-origin through the GPS proxy. If it is not ready yet, try again on the next tick.
+      }
+    };
+
+    scrapeFrame();
+    const scrapeInterval = setInterval(scrapeFrame, 1200);
+    return () => clearInterval(scrapeInterval);
+  }, [gpsFrameUrl, gpsPlate, gpsReloadKey, isGpsModalOpen]);
 
   useEffect(() => {
     if (!isGpsModalOpen || gpsFrameError || gpsStatus === "Live Tracking" || gpsStatus === "Vehicle not found") return;
@@ -1447,6 +1793,62 @@ function App() {
                   setGpsStatus("Connection failed");
                 }}
               />
+              <aside className="gps-route-panel" aria-label="Route estimate">
+                <div className="route-panel-image">
+                  <img
+                    src={routeInsight.imageUrl}
+                    alt={routeInsight.placeLabel}
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => { e.currentTarget.style.display = "none"; }}
+                  />
+                </div>
+                <div className="route-panel-content">
+                  <div className="route-panel-head">
+                    <div>
+                      <span className="route-kicker">{currentDriver.name} · {formatPlateLabel(selectedPlate)}</span>
+                      <strong>{routeInsight.placeLabel}</strong>
+                    </div>
+                    <span className={`route-live-dot${routeInsight.hasLiveLocation ? " active" : ""}`} />
+                  </div>
+                  <p className="route-place-detail">{routeInsight.placeDetail}</p>
+
+                  <div className="route-stat-grid">
+                    <div>
+                      <span>Distance left</span>
+                      <strong>{routeInsight.distanceLeft}</strong>
+                    </div>
+                    <div>
+                      <span>Time left @ 70km/h</span>
+                      <strong>{routeInsight.timeLeft}</strong>
+                    </div>
+                  </div>
+
+                  <div className="route-progress">
+                    <div className="route-progress-bar" style={{ width: `${routeInsight.progress}%` }} />
+                  </div>
+
+                  <div className="route-node-list">
+                    <div>
+                      <span>Start</span>
+                      <strong>{routeInsight.start.shortName}</strong>
+                      <small>{routeInsight.start.location}</small>
+                      <small>{formatCoordinatePair(routeInsight.start.latitude, routeInsight.start.longitude)}</small>
+                    </div>
+                    <div>
+                      <span>Destination</span>
+                      <strong>{routeInsight.destination.shortName}</strong>
+                      <small>{routeInsight.destination.location}</small>
+                      <small>{formatCoordinatePair(routeInsight.destination.latitude, routeInsight.destination.longitude)}</small>
+                    </div>
+                  </div>
+
+                  <div className="route-direction">
+                    <span>{routeInsight.directionLabel}</span>
+                    {routeInsight.directionConfidence ? <small>{routeInsight.directionConfidence}</small> : null}
+                  </div>
+                </div>
+              </aside>
             </div>
           </div>
         </div>

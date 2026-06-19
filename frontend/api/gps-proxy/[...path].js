@@ -131,6 +131,183 @@ function gpsAutomationScript() {
     window.parent.postMessage({ type: "GPS_STATUS", status: status }, "*");
   }
 
+  function toNumber(value) {
+    var number = Number(String(value || "").replace(/[^0-9.-]/g, ""));
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function isValidCoordinate(latitude, longitude) {
+    return latitude !== null && longitude !== null && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180;
+  }
+
+  function parseCoordinateText(text) {
+    var source = String(text || "").replace(/\\s+/g, " ");
+    var explicitCopyMatch = source.match(/handleCopyCoords\\([^0-9-]*(-?\\d{1,2}\\.\\d{3,})\\s*,\\s*(-?\\d{1,3}\\.\\d{3,})/i);
+    var match = explicitCopyMatch || source.match(/(?:Coordinates\\s*)?(-?\\d{1,2}\\.\\d{3,})\\s*(?:\\u00b0)?\\s*([NS])?[,\\s]+(-?\\d{1,3}\\.\\d{3,})\\s*(?:\\u00b0)?\\s*([EW])?/i);
+    if (!match) return null;
+
+    var latitude = toNumber(match[1]);
+    var longitude = toNumber(explicitCopyMatch ? match[2] : match[3]);
+    if (!explicitCopyMatch && match[2] && match[2].toUpperCase() === "S") latitude = -Math.abs(latitude);
+    if (!explicitCopyMatch && match[4] && match[4].toUpperCase() === "W") longitude = -Math.abs(longitude);
+
+    return isValidCoordinate(latitude, longitude) ? { latitude: latitude, longitude: longitude } : null;
+  }
+
+  function parseHeadingText(text) {
+    var match = String(text || "").match(/(?:heading|course|bearing|direction|angle)[^0-9]{0,16}(\\d{1,3}(?:\\.\\d+)?)/i);
+    var heading = match ? toNumber(match[1]) : null;
+    return heading !== null ? ((heading % 360) + 360) % 360 : null;
+  }
+
+  function getPopupLocationLabel(text) {
+    var source = String(text || "").replace(/\\s+/g, " ");
+    var match = source.match(/Location\\s+(.+?)\\s+(?:Timestamp|Company|Driver|Driver Phone|Device Phone|Device IMEI|Coordinates|Follow|History|Best View|Stoppages|$)/i);
+    return match ? match[1].trim().slice(0, 220) : "";
+  }
+
+  function getVehicleLabel() {
+    if (!targetPlate) return "";
+    var match = Array.from(document.querySelectorAll(".leaflet-popup-content, button, [role='button'], li, aside, [role='dialog'], [class*='vehicle'], [class*='detail']"))
+      .find(function(element) {
+        var text = element.textContent || "";
+        return text.includes(targetPlate) && text.length < 1400;
+      });
+
+    return match ? (match.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 180) : "";
+  }
+
+  function getLayerText(layer) {
+    var parts = [];
+    try { if (layer.options && layer.options.title) parts.push(layer.options.title); } catch (error) {}
+    try { if (layer.options && layer.options.alt) parts.push(layer.options.alt); } catch (error) {}
+    try { if (layer.getTooltip && layer.getTooltip() && layer.getTooltip().getContent) parts.push(String(layer.getTooltip().getContent())); } catch (error) {}
+    try { if (layer.getPopup && layer.getPopup() && layer.getPopup().getContent) parts.push(String(layer.getPopup().getContent())); } catch (error) {}
+    try { if (layer._icon && layer._icon.textContent) parts.push(layer._icon.textContent); } catch (error) {}
+    return parts.join(" ");
+  }
+
+  function findLeafletLocation() {
+    var maps = [];
+    Object.keys(window).some(function(key) {
+      try {
+        var value = window[key];
+        if (value && typeof value.eachLayer === "function" && typeof value.latLngToContainerPoint === "function") {
+          maps.push(value);
+        }
+      } catch (error) {}
+      return maps.length > 4;
+    });
+
+    for (var i = 0; i < maps.length; i += 1) {
+      var candidates = [];
+      try {
+        maps[i].eachLayer(function(layer) {
+          if (!layer || typeof layer.getLatLng !== "function") return;
+          var latLng = layer.getLatLng();
+          var latitude = toNumber(latLng && latLng.lat);
+          var longitude = toNumber(latLng && latLng.lng);
+          if (isValidCoordinate(latitude, longitude)) {
+            var layerText = getLayerText(layer);
+            var matchesPlate = targetPlate && layerText.includes(targetPlate);
+            var popupOpen = Boolean((layer.isPopupOpen && layer.isPopupOpen()) || (layer.getPopup && layer.getPopup() && layer.getPopup().isOpen && layer.getPopup().isOpen()));
+            candidates.push({
+              latitude: latitude,
+              longitude: longitude,
+              heading: toNumber(layer.options && (layer.options.rotationAngle || layer.options.angle || layer.options.heading || layer.options.rotation)),
+              score: (matchesPlate ? 100 : 0) + (popupOpen ? 50 : 0) + (layerText ? 5 : 0)
+            });
+          }
+        });
+      } catch (error) {}
+      if (candidates.length) {
+        candidates.sort(function(a, b) { return b.score - a.score; });
+        return candidates[0];
+      }
+    }
+
+    return null;
+  }
+
+  function publishLocation() {
+    var popupElements = Array.from(document.querySelectorAll(".leaflet-popup-content, .custom-vehicle-popup, .leaflet-popup"));
+    var popupText = popupElements
+      .map(function(element) {
+        return [
+          element.innerText,
+          element.textContent,
+          Array.from(element.querySelectorAll("[onclick]")).map(function(node) { return node.getAttribute("onclick"); }).join(" ")
+        ].filter(Boolean).join(" ");
+      })
+      .find(function(text) { return textMatchesTargetPlate(text) || /Coordinates/i.test(text); });
+    var bodyText = [popupText, document.body && document.body.innerText, document.body && document.body.textContent].filter(Boolean).join(" ");
+    var location = parseCoordinateText(bodyText) || findLeafletLocation();
+    if (!location) return;
+
+    var heading = location.heading !== null && location.heading !== undefined
+      ? location.heading
+      : parseHeadingText(bodyText);
+
+    window.parent.postMessage({
+      type: "GPS_LOCATION",
+      latitude: location.latitude,
+      longitude: location.longitude,
+      heading: heading,
+      label: getPopupLocationLabel(bodyText) || getVehicleLabel()
+    }, "*");
+    notify("GPS coordinates found");
+  }
+
+  function textMatchesTargetPlate(text) {
+    function compact(value) {
+      return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    }
+    return Boolean(targetPlate && (String(text || "").includes(targetPlate) || compact(text).includes(compact(targetPlate))));
+  }
+
+  function clickLikeUser(element) {
+    if (!element) return false;
+    ["mouseover", "mousedown", "mouseup", "click"].forEach(function(type) {
+      element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    });
+    return true;
+  }
+
+  function findTargetMapElement() {
+    var mapSelectors = [
+      ".leaflet-popup-content",
+      ".leaflet-marker-icon",
+      ".leaflet-tooltip",
+      ".leaflet-marker-pane div",
+      ".leaflet-pane div",
+      ".leaflet-container span",
+      ".leaflet-container button"
+    ].join(", ");
+
+    var match = Array.from(document.querySelectorAll(mapSelectors))
+      .find(function(element) {
+        var text = element.textContent || "";
+        return textMatchesTargetPlate(text) && text.length < 500;
+      });
+
+    if (!match) return null;
+    return match.closest(".leaflet-marker-icon, .leaflet-tooltip, .leaflet-popup-content, .leaflet-pane > div") || match;
+  }
+
+  function findTargetListElement() {
+    return Array.from(document.querySelectorAll("button, [role='button'], li"))
+      .find(function(element) {
+        var text = element.textContent || "";
+        var blocked = element.closest("[aria-label*='Notifications'], [class*='notification'], [class*='alert']");
+        return !blocked && textMatchesTargetPlate(text) && text.length < 900;
+      });
+  }
+
+  function clickTargetVehicle() {
+    var targetElement = findTargetMapElement() || findTargetListElement();
+    return clickLikeUser(targetElement);
+  }
+
   function closeMapPanels() {
     var closeButtons = Array.from(document.querySelectorAll(
       "button[aria-label*='Close'], button[title*='Close'], button[aria-label*='close'], button[title*='close']"
@@ -179,6 +356,8 @@ function gpsAutomationScript() {
         return;
       }
 
+      publishLocation();
+
       var searchInput = Array.from(document.querySelectorAll("input")).find(function(input) {
         var label = ((input.placeholder || "") + " " + (input.getAttribute("aria-label") || "")).toLowerCase();
         return label.includes("search") || label.includes("vehicle") || label.includes("plate");
@@ -192,23 +371,23 @@ function gpsAutomationScript() {
         searchInput.dispatchEvent(new Event("input", { bubbles: true }));
         searchInput.dispatchEvent(new Event("change", { bubbles: true }));
 
-        var match = Array.from(document.querySelectorAll("button, [role='button'], li, div, span"))
-          .find(function(element) {
-            return element.textContent && element.textContent.includes(targetPlate);
-          });
-
-        if (match) {
-          match.click();
+        if (clickTargetVehicle()) {
           window.__lastSelectedPlate = targetPlate;
+          setTimeout(clickTargetVehicle, 500);
+          setTimeout(clickTargetVehicle, 1500);
           setTimeout(closeMapPanels, 700);
           setTimeout(closeMapPanels, 1800);
+          setTimeout(publishLocation, 900);
+          setTimeout(publishLocation, 2000);
           notify("Live Tracking");
         } else {
           searchAttempts += 1;
           if (searchAttempts > 15) notify("Vehicle not found");
         }
       } else {
+        clickTargetVehicle();
         closeMapPanels();
+        publishLocation();
         notify("Live Tracking");
       }
     } catch (error) {

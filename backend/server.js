@@ -339,6 +339,179 @@ app.use((req, res, next) => {
 
   let searchAttempts = 0;
 
+  const toNumber = (value) => {
+    const number = Number(String(value || "").replace(/[^0-9.-]/g, ""));
+    return Number.isFinite(number) ? number : null;
+  };
+
+  const isValidCoordinate = (latitude, longitude) => (
+    latitude !== null && longitude !== null && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180
+  );
+
+  const parseCoordinateText = (text) => {
+    const source = String(text || "").replace(/\\s+/g, " ");
+    const explicitCopyMatch = source.match(/handleCopyCoords\\([^0-9-]*(-?\\d{1,2}\\.\\d{3,})\\s*,\\s*(-?\\d{1,3}\\.\\d{3,})/i);
+    const match = explicitCopyMatch || source.match(/(?:Coordinates\\s*)?(-?\\d{1,2}\\.\\d{3,})\\s*(?:\\u00b0)?\\s*([NS])?[,\\s]+(-?\\d{1,3}\\.\\d{3,})\\s*(?:\\u00b0)?\\s*([EW])?/i);
+    if (!match) return null;
+
+    let latitude = toNumber(match[1]);
+    let longitude = toNumber(explicitCopyMatch ? match[2] : match[3]);
+    if (!explicitCopyMatch && match[2] && match[2].toUpperCase() === "S") latitude = -Math.abs(latitude);
+    if (!explicitCopyMatch && match[4] && match[4].toUpperCase() === "W") longitude = -Math.abs(longitude);
+
+    return isValidCoordinate(latitude, longitude) ? { latitude, longitude } : null;
+  };
+
+  const parseHeadingText = (text) => {
+    const match = String(text || "").match(/(?:heading|course|bearing|direction|angle)[^0-9]{0,16}(\\d{1,3}(?:\\.\\d+)?)/i);
+    const heading = match ? toNumber(match[1]) : null;
+    return heading !== null ? ((heading % 360) + 360) % 360 : null;
+  };
+
+  const getPopupLocationLabel = (text) => {
+    const source = String(text || "").replace(/\\s+/g, " ");
+    const match = source.match(/Location\\s+(.+?)\\s+(?:Timestamp|Company|Driver|Driver Phone|Device Phone|Device IMEI|Coordinates|Follow|History|Best View|Stoppages|$)/i);
+    return match ? match[1].trim().slice(0, 220) : "";
+  };
+
+  const getVehicleLabel = () => {
+    if (!targetPlate) return "";
+    const match = Array.from(document.querySelectorAll(".leaflet-popup-content, button, [role='button'], li, aside, [role='dialog'], [class*='vehicle'], [class*='detail']"))
+      .find((element) => {
+        const text = element.textContent || "";
+        return text.includes(targetPlate) && text.length < 1400;
+      });
+
+    return match ? (match.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 180) : "";
+  };
+
+  const getLayerText = (layer) => {
+    const parts = [];
+    try { if (layer.options?.title) parts.push(layer.options.title); } catch (error) {}
+    try { if (layer.options?.alt) parts.push(layer.options.alt); } catch (error) {}
+    try { if (layer.getTooltip?.()?.getContent) parts.push(String(layer.getTooltip().getContent())); } catch (error) {}
+    try { if (layer.getPopup?.()?.getContent) parts.push(String(layer.getPopup().getContent())); } catch (error) {}
+    try { if (layer._icon?.textContent) parts.push(layer._icon.textContent); } catch (error) {}
+    return parts.join(" ");
+  };
+
+  const findLeafletLocation = () => {
+    const maps = [];
+    Object.keys(window).some((key) => {
+      try {
+        const value = window[key];
+        if (value && typeof value.eachLayer === "function" && typeof value.latLngToContainerPoint === "function") {
+          maps.push(value);
+        }
+      } catch (error) {}
+      return maps.length > 4;
+    });
+
+    for (const map of maps) {
+      const candidates = [];
+      try {
+        map.eachLayer((layer) => {
+          if (!layer || typeof layer.getLatLng !== "function") return;
+          const latLng = layer.getLatLng();
+          const latitude = toNumber(latLng && latLng.lat);
+          const longitude = toNumber(latLng && latLng.lng);
+          if (isValidCoordinate(latitude, longitude)) {
+            const layerText = getLayerText(layer);
+            const matchesPlate = targetPlate && layerText.includes(targetPlate);
+            const popupOpen = Boolean(layer.isPopupOpen?.() || layer.getPopup?.()?.isOpen?.());
+            candidates.push({
+              latitude,
+              longitude,
+              heading: toNumber(layer.options && (layer.options.rotationAngle || layer.options.angle || layer.options.heading || layer.options.rotation)),
+              score: (matchesPlate ? 100 : 0) + (popupOpen ? 50 : 0) + (layerText ? 5 : 0)
+            });
+          }
+        });
+      } catch (error) {}
+      if (candidates.length) {
+        candidates.sort((a, b) => b.score - a.score);
+        return candidates[0];
+      }
+    }
+
+    return null;
+  };
+
+  const publishLocation = () => {
+    const popupElements = Array.from(document.querySelectorAll(".leaflet-popup-content, .custom-vehicle-popup, .leaflet-popup"));
+    const popupText = popupElements
+      .map((element) => [
+        element.innerText,
+        element.textContent,
+        Array.from(element.querySelectorAll("[onclick]")).map((node) => node.getAttribute("onclick")).join(" ")
+      ].filter(Boolean).join(" "))
+      .find((text) => textMatchesTargetPlate(text) || /Coordinates/i.test(text));
+    const bodyText = [popupText, document.body?.innerText, document.body?.textContent].filter(Boolean).join(" ");
+    const location = parseCoordinateText(bodyText) || findLeafletLocation();
+    if (!location) return;
+
+    const heading = location.heading !== null && location.heading !== undefined
+      ? location.heading
+      : parseHeadingText(bodyText);
+
+    window.parent.postMessage({
+      type: 'GPS_LOCATION',
+      latitude: location.latitude,
+      longitude: location.longitude,
+      heading,
+      label: getPopupLocationLabel(bodyText) || getVehicleLabel()
+    }, '*');
+    window.parent.postMessage({ type: 'GPS_STATUS', status: 'GPS coordinates found' }, '*');
+  };
+
+  const textMatchesTargetPlate = (text) => {
+    const compact = (value) => String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    return Boolean(targetPlate && (String(text || "").includes(targetPlate) || compact(text).includes(compact(targetPlate))));
+  };
+
+  const clickLikeUser = (element) => {
+    if (!element) return false;
+    ["mouseover", "mousedown", "mouseup", "click"].forEach((type) => {
+      element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    });
+    return true;
+  };
+
+  const findTargetMapElement = () => {
+    const mapSelectors = [
+      ".leaflet-popup-content",
+      ".leaflet-marker-icon",
+      ".leaflet-tooltip",
+      ".leaflet-marker-pane div",
+      ".leaflet-pane div",
+      ".leaflet-container span",
+      ".leaflet-container button"
+    ].join(", ");
+
+    const match = Array.from(document.querySelectorAll(mapSelectors))
+      .find((element) => {
+        const text = element.textContent || "";
+        return textMatchesTargetPlate(text) && text.length < 500;
+      });
+
+    if (!match) return null;
+    return match.closest(".leaflet-marker-icon, .leaflet-tooltip, .leaflet-popup-content, .leaflet-pane > div") || match;
+  };
+
+  const findTargetListElement = () => {
+    return Array.from(document.querySelectorAll("button, [role='button'], li"))
+      .find((element) => {
+        const text = element.textContent || "";
+        const blocked = element.closest("[aria-label*='Notifications'], [class*='notification'], [class*='alert']");
+        return !blocked && textMatchesTargetPlate(text) && text.length < 900;
+      });
+  };
+
+  const clickTargetVehicle = () => {
+    const targetElement = findTargetMapElement() || findTargetListElement();
+    return clickLikeUser(targetElement);
+  };
+
   const closeAlertPanels = () => {
     const alertWords = ["alert", "alerts", "alarm", "alarms", "notification", "details"];
     const hasAlertText = (element) => {
@@ -398,6 +571,7 @@ app.use((req, res, next) => {
       }
 
       // 2. Check for Dashboard and search input
+      publishLocation();
       const searchInput = document.querySelector("input[placeholder*='Search']");
       if (searchInput && targetPlate) {
         if (window.__lastSelectedPlate !== targetPlate) {
@@ -407,16 +581,16 @@ app.use((req, res, next) => {
             searchInput.dispatchEvent(new Event("input", { bubbles: true }));
           }
 
-          // Click the matching vehicle button
-          const buttons = Array.from(document.querySelectorAll("button"));
-          const match = buttons.find(b => b.textContent && b.textContent.includes(targetPlate));
-          if (match) {
-            match.click();
+          if (clickTargetVehicle()) {
             window.__lastSelectedPlate = targetPlate;
             console.log("Clicked matching vehicle:", targetPlate);
+            setTimeout(clickTargetVehicle, 500);
+            setTimeout(clickTargetVehicle, 1500);
             setTimeout(closeAlertPanels, 250);
             setTimeout(closeAlertPanels, 800);
             setTimeout(closeAlertPanels, 1800);
+            setTimeout(publishLocation, 900);
+            setTimeout(publishLocation, 2000);
             window.parent.postMessage({ type: 'GPS_STATUS', status: 'Live Tracking' }, '*');
           } else {
             searchAttempts++;
@@ -425,7 +599,9 @@ app.use((req, res, next) => {
             }
           }
         } else {
+          clickTargetVehicle();
           closeAlertPanels();
+          publishLocation();
           window.parent.postMessage({ type: 'GPS_STATUS', status: 'Live Tracking' }, '*');
         }
         
