@@ -8,3 +8,5 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20
+      - key: KEEP_ALIVE_URL
+        value: https://trucktracker-ux1i.onrender.com/api/health

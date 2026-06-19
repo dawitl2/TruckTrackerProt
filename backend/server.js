@@ -12,6 +12,7 @@ const WebSocket = require("ws");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const KEEP_ALIVE_INTERVAL_MS = 5 * 60 * 1000;
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -44,6 +45,58 @@ const supabase =
 
 const fallbackArrivals = new Map();
 const frontendBuildPath = path.join(__dirname, "..", "frontend", "build");
+
+function normalizeKeepAliveUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+
+  try {
+    const url = new URL(text);
+    if (url.pathname === "/" || url.pathname === "") {
+      url.pathname = "/api/health";
+    }
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function getKeepAliveUrl() {
+  return normalizeKeepAliveUrl(
+    process.env.KEEP_ALIVE_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    ""
+  );
+}
+
+function startKeepAlive() {
+  const keepAliveUrl = getKeepAliveUrl();
+  if (!keepAliveUrl) return;
+
+  const ping = async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
+    try {
+      const response = await fetch(keepAliveUrl, {
+        method: "GET",
+        signal: controller.signal,
+        headers: {
+          "User-Agent": "TruckTracker-KeepAlive/1.0"
+        }
+      });
+
+      console.log(`Keep-alive ping ${response.status}: ${keepAliveUrl}`);
+    } catch (error) {
+      console.warn(`Keep-alive ping failed: ${error.message}`);
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  setTimeout(ping, 60 * 1000);
+  setInterval(ping, KEEP_ALIVE_INTERVAL_MS);
+}
 
 function normalizePlateValue(value) {
   return String(value || "").trim().replace(/\s+/g, "").toUpperCase();
@@ -286,8 +339,40 @@ app.use((req, res, next) => {
 
   let searchAttempts = 0;
 
+  const closeAlertPanels = () => {
+    const alertWords = ["alert", "alerts", "alarm", "alarms", "notification", "details"];
+    const hasAlertText = (element) => {
+      const text = (element?.textContent || "").toLowerCase();
+      return alertWords.some((word) => text.includes(word));
+    };
+
+    const closeButtons = Array.from(document.querySelectorAll(
+      "button[aria-label*='Close'], button[aria-label*='close'], button[title*='Close'], button[title*='close'], button"
+    ));
+
+    closeButtons.forEach((button) => {
+      const label = ((button.getAttribute("aria-label") || "") + " " + (button.getAttribute("title") || "") + " " + (button.textContent || "")).toLowerCase();
+      const area = button.closest("[role='dialog'], [data-vaul-drawer], aside, section, .drawer, .modal, div");
+      const isCloseButton = label.includes("close") || label === "x" || label === "×" || label === "✕";
+
+      if (isCloseButton && area && hasAlertText(area) && !area.querySelector(".leaflet-container")) {
+        button.click();
+      }
+    });
+
+    Array.from(document.querySelectorAll("[role='dialog'], [data-vaul-drawer], aside, .drawer, .modal")).forEach((panel) => {
+      if (panel.querySelector(".leaflet-container")) return;
+      if (hasAlertText(panel)) {
+        panel.style.display = "none";
+        panel.setAttribute("aria-hidden", "true");
+      }
+    });
+  };
+
   const intervalId = setInterval(() => {
     try {
+      closeAlertPanels();
+
       // 1. Check for Login page
       const usernameInput = document.getElementById("username");
       const passwordInput = document.getElementById("password");
@@ -329,6 +414,9 @@ app.use((req, res, next) => {
             match.click();
             window.__lastSelectedPlate = targetPlate;
             console.log("Clicked matching vehicle:", targetPlate);
+            setTimeout(closeAlertPanels, 250);
+            setTimeout(closeAlertPanels, 800);
+            setTimeout(closeAlertPanels, 1800);
             window.parent.postMessage({ type: 'GPS_STATUS', status: 'Live Tracking' }, '*');
           } else {
             searchAttempts++;
@@ -337,6 +425,7 @@ app.use((req, res, next) => {
             }
           }
         } else {
+          closeAlertPanels();
           window.parent.postMessage({ type: 'GPS_STATUS', status: 'Live Tracking' }, '*');
         }
         
@@ -754,4 +843,5 @@ app.listen(PORT, () => {
   if (!supabase) {
     console.log("Supabase env vars are missing. Running with in-memory storage.");
   }
+  startKeepAlive();
 });
