@@ -8,6 +8,7 @@ const fs = require("fs");
 const path = require("path");
 const { createClient } = require("@supabase/supabase-js");
 const { randomUUID } = require("crypto");
+const WebSocket = require("ws");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -33,7 +34,13 @@ const supabaseKey =
   "";
 
 const supabase =
-  supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
+  supabaseUrl && supabaseKey
+    ? createClient(supabaseUrl, supabaseKey, {
+        realtime: {
+          transport: WebSocket
+        }
+      })
+    : null;
 
 const fallbackArrivals = new Map();
 const frontendBuildPath = path.join(__dirname, "..", "frontend", "build");
