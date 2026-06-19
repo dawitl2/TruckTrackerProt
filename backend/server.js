@@ -21,6 +21,9 @@ const upload = multer({
 
 const TARGET_REFERENCE = "FT00211QWBK0";
 const TABLE_NAME = "bank_transactions";
+const TRUCK_ARRIVALS_TABLE = "truck_arrivals";
+const TARGET_LICENSE_PLATES = ["A06725/32431", "A09321/32699"];
+const TARGET_LICENSE_PLATE_SET = new Set(TARGET_LICENSE_PLATES.map(normalizePlateValue));
 
 const supabaseUrl = process.env.SUPABASE_URL || "";
 const supabaseKey =
@@ -34,6 +37,144 @@ const supabase =
 
 const fallbackArrivals = new Map();
 const frontendBuildPath = path.join(__dirname, "..", "frontend", "build");
+
+function normalizePlateValue(value) {
+  return String(value || "").trim().replace(/\s+/g, "").toUpperCase();
+}
+
+function formatDate(date) {
+  return new Intl.DateTimeFormat("en-CA").format(date);
+}
+
+function formatTime(date) {
+  return new Intl.DateTimeFormat("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(date);
+}
+
+function cleanTruckCell(value) {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function isTruckDateLike(value) {
+  const text = cleanTruckCell(value);
+  return /^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/.test(text) || /^\d{4}[./-]\d{1,2}[./-]\d{1,2}$/.test(text);
+}
+
+function toTruckIsoDate(value) {
+  const text = cleanTruckCell(value);
+  const match = text.match(/^(\d{1,4})[./-](\d{1,2})[./-](\d{1,4})$/);
+  if (!match) return "";
+
+  let [, first, second, third] = match;
+  let year;
+  let month;
+  let day;
+
+  if (first.length === 4) {
+    year = first;
+    month = second;
+    day = third;
+  } else {
+    day = first;
+    month = second;
+    year = third.length === 2 ? `20${third}` : third;
+  }
+
+  return `${year.padStart(4, "0")}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+}
+
+function isTruckTimeLike(value) {
+  return /^\d{1,2}:\d{2}(:\d{2})?$/.test(cleanTruckCell(value));
+}
+
+function isTruckPlateLike(value) {
+  const plate = normalizePlateValue(value);
+  return TARGET_LICENSE_PLATE_SET.has(plate) || /^[A-Z]?\d{4,6}\/\d{4,6}$/.test(plate);
+}
+
+function isTruckArrivalCodeLike(value) {
+  const text = cleanTruckCell(value);
+  if (!text || isTruckDateLike(text) || isTruckTimeLike(text) || isTruckPlateLike(text)) return false;
+  if (/^\d{4,7}$/.test(text)) return true;
+  return /^[A-Z0-9-]{4,12}$/i.test(text) && /\d/.test(text);
+}
+
+function looksLikeTruckProduct(value) {
+  return /^(AGO|MGR|PMS|JET|DPK|LPG|KEROSENE|DIESEL|GASOIL|GASOLINE)$/i.test(cleanTruckCell(value));
+}
+
+function looksLikeTruckCompany(value) {
+  const text = cleanTruckCell(value);
+  if (!text || isTruckDateLike(text) || isTruckTimeLike(text) || isTruckPlateLike(text) || isTruckArrivalCodeLike(text) || looksLikeTruckProduct(text)) return false;
+  return /[A-Z]/i.test(text);
+}
+
+function pickNearbyTruckCell(cells, startIndex, predicate, usedIndexes) {
+  const indexes = cells.map((_, index) => index)
+    .filter((index) => index !== startIndex && !usedIndexes.has(index))
+    .sort((a, b) => Math.abs(a - startIndex) - Math.abs(b - startIndex) || a - b);
+
+  return indexes.find((index) => predicate(cells[index]));
+}
+
+function pickTruckArrivalCodeCell(cells, plateIndex, usedIndexes) {
+  const rightSideCode = cells.findIndex((cell, index) =>
+    index > plateIndex && !usedIndexes.has(index) && isTruckArrivalCodeLike(cell)
+  );
+
+  return rightSideCode >= 0
+    ? rightSideCode
+    : pickNearbyTruckCell(cells, plateIndex, isTruckArrivalCodeLike, usedIndexes);
+}
+
+function parseTruckArrivalRow(row, arrivalDate, batchTime) {
+  const cells = (Array.isArray(row) ? row : []).map(cleanTruckCell);
+  if (!cells.some(Boolean)) return null;
+
+  const targetIndex = cells.findIndex((cell) => TARGET_LICENSE_PLATE_SET.has(normalizePlateValue(cell)));
+  const plateIndex = targetIndex >= 0 ? targetIndex : cells.findIndex(isTruckPlateLike);
+  if (plateIndex < 0) return null;
+
+  const usedIndexes = new Set([plateIndex]);
+  const codeIndex = pickTruckArrivalCodeCell(cells, plateIndex, usedIndexes);
+  if (codeIndex === undefined) return null;
+  usedIndexes.add(codeIndex);
+
+  const dateIndex = pickNearbyTruckCell(cells, plateIndex, isTruckDateLike, usedIndexes);
+  if (dateIndex !== undefined) usedIndexes.add(dateIndex);
+
+  const timeIndex = pickNearbyTruckCell(cells, plateIndex, isTruckTimeLike, usedIndexes);
+  if (timeIndex !== undefined) usedIndexes.add(timeIndex);
+
+  const productIndex = pickNearbyTruckCell(cells, plateIndex, looksLikeTruckProduct, usedIndexes);
+  if (productIndex !== undefined) usedIndexes.add(productIndex);
+
+  const companyIndex = pickNearbyTruckCell(cells, plateIndex, looksLikeTruckCompany, usedIndexes);
+
+  return {
+    arrival_date: dateIndex !== undefined ? toTruckIsoDate(cells[dateIndex]) || arrivalDate : arrivalDate,
+    batch_time: timeIndex !== undefined ? cells[timeIndex].slice(0, 5) : batchTime,
+    license_plate: cells[plateIndex],
+    arrival_code: cells[codeIndex],
+    product_type: productIndex !== undefined ? cells[productIndex] : null,
+    company: companyIndex !== undefined ? cells[companyIndex] : null
+  };
+}
+
+function shortcutPayload(rows) {
+  const payloadRows = rows.map((row, index) => ({
+    id: String(row.id || `local-${index}`),
+    license_plate: row.license_plate || "",
+    arrival_code: row.arrival_code || "",
+    arrival_date: row.arrival_date || "",
+    batch_time: row.batch_time || ""
+  }));
+
+  return Buffer.from(JSON.stringify(payloadRows)).toString("base64url");
+}
 
 const allowedOrigins = (process.env.CORS_ORIGIN || "")
   .split(",")
@@ -538,60 +679,58 @@ app.post("/api/arrivals", async (req, res) => {
 app.post("/api/import", upload.any(), async (req, res) => {
   try {
     const file = pickUploadedFile(req);
-    const targetReference = TARGET_REFERENCE;
 
     if (!file) {
-      return res.status(400).json({
-        error: "No file uploaded"
-      });
+      return res.redirect(302, "/?from=shortcut&status=error");
     }
 
     const workbook = readWorkbookFromFile(file);
     const sheetName = workbook.SheetNames[0];
 
     if (!sheetName) {
-      return res.status(400).json({
-        error: "The uploaded workbook does not contain any sheets"
-      });
+      return res.redirect(302, "/?from=shortcut&status=error");
     }
 
     const worksheet = workbook.Sheets[sheetName];
-    const rows = xlsx.utils.sheet_to_json(worksheet, {
+    const matrix = xlsx.utils.sheet_to_json(worksheet, {
+      header: 1,
       defval: "",
       raw: false
     });
 
-    if (!rows.length) {
-      return res.status(400).json({
-        error: "No data rows were found in the uploaded file"
-      });
+    const now = new Date();
+    const arrivalDate = formatDate(now);
+    const batchTime = formatTime(now);
+
+    const targetRows = matrix
+      .map((row) => parseTruckArrivalRow(row, arrivalDate, batchTime))
+      .filter((row) => row && TARGET_LICENSE_PLATE_SET.has(normalizePlateValue(row.license_plate)));
+
+    if (!targetRows.length) {
+      return res.redirect(302, "/?from=shortcut&status=not_found");
     }
 
-    const records = extractRecords(rows, file.originalname || "uploaded-file", targetReference);
-
-    if (!records.length) {
-      return res.status(404).json({
-        ok: false,
-        message: "No matching reference was found",
-        importedCount: 0,
-        savedCount: 0,
-        rows: []
-      });
+    if (!supabase) {
+      const payload = shortcutPayload(targetRows);
+      return res.redirect(302, `/?from=shortcut&status=db_error&rows=${payload}`);
     }
 
-    res.json({
-      ok: true,
-      message: "Reference matched",
-      importedCount: records.length,
-      savedCount: 0,
-      rows: records,
-      arrivals: await loadArrivals(12)
-    });
+    const { data, error } = await supabase
+      .from(TRUCK_ARRIVALS_TABLE)
+      .insert(targetRows)
+      .select("id,license_plate,arrival_code,arrival_date,batch_time");
+
+    if (error) {
+      console.error("Supabase truck arrival import error:", error);
+      const payload = shortcutPayload(targetRows);
+      return res.redirect(302, `/?from=shortcut&status=db_error&rows=${payload}`);
+    }
+
+    const payload = shortcutPayload(data || targetRows);
+    return res.redirect(302, `/?from=shortcut&status=saved&rows=${payload}`);
   } catch (error) {
-    console.error("Failed to import file:", error);
-    res.status(500).json({
-      error: "Failed to import file"
-    });
+    console.error("Failed to import truck arrival file:", error);
+    return res.redirect(302, "/?from=shortcut&status=error");
   }
 });
 

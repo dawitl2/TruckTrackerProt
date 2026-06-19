@@ -1,0 +1,14 @@
+{
+  "name": "truck-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "render-build": "npm ci --prefix backend && npm ci --prefix frontend && npm run build --prefix frontend",
+    "start": "npm start --prefix backend",
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:frontend": "npm start --prefix frontend"
+  },
+  "engines": {
+    "node": "20.x"
+  }
+}

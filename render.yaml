@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: truck-tracker
+    env: node
+    plan: free
+    buildCommand: npm run render-build
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 20

@@ -285,7 +285,7 @@ function parseShortcutRows(params) {
 }
 
 const GPS_PROXY_ORIGIN = process.env.NODE_ENV === "development" ? "http://localhost:5000" : "";
-const GPS_PROXY_PATH = process.env.NODE_ENV === "development" ? "/gps-proxy" : "/api/gps-proxy";
+const GPS_PROXY_PATH = "/gps-proxy";
 
 function getGpsTrackingUrl(plate) {
   return `${GPS_PROXY_ORIGIN}${GPS_PROXY_PATH}/tracking?plate=${encodeURIComponent(plate)}`;
