@@ -39,6 +39,27 @@ function normalizePlate(value) {
   return String(value || "").trim().replace(/\s+/g, "").toUpperCase();
 }
 
+// Strips everything except letters/digits so plate comparisons survive
+// different separators, spacing, or extra text the file might add around
+// the plate (e.g. "Plate: A06725/32431", "A06725 - 32431", etc).
+function compactPlateText(value) {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+// Returns the canonical target plate (e.g. "A06725/32431") if `value`
+// matches or contains one of our target plates, regardless of formatting.
+// Returns null if there's no match.
+function findMatchingTargetPlate(value) {
+  const compactCell = compactPlateText(value);
+  if (!compactCell) return null;
+  return (
+    TARGET_LICENSE_PLATES.find((plate) => {
+      const compactPlate = compactPlateText(plate);
+      return compactPlate && (compactCell === compactPlate || compactCell.includes(compactPlate));
+    }) || null
+  );
+}
+
 function formatPlateLabel(value) {
   const plate = normalizePlate(value);
   return plate.split("/")[0] || plate;
@@ -141,19 +162,38 @@ function pickArrivalCodeCell(cells, plateIndex, usedIndexes) {
     : pickNearbyCell(cells, plateIndex, isArrivalCodeLike, usedIndexes);
 }
 
+// Last-resort fallback: grabs the next non-blank cell that hasn't already
+// been claimed by another field. Used so a row is never thrown away just
+// because the arrival-code heuristic couldn't recognize its format.
+function pickFallbackCell(cells, usedIndexes) {
+  const index = cells.findIndex((cell, i) => !usedIndexes.has(i) && !isBlankCell(cell));
+  return index >= 0 ? index : undefined;
+}
+
 function parseArrivalRow(row, extractionDate, extractionTime) {
   const cells = (Array.isArray(row) ? row : []).map(cleanCell);
   if (!cells.some((cell) => !isBlankCell(cell))) return null;
 
-  const targetIndex = cells.findIndex((cell) => TARGET_LICENSE_PLATE_SET.has(normalizePlate(cell)));
+  // Scan every cell in the row — no fixed column assumptions — looking for a
+  // target plate. Matching is lenient: a cell counts as a match even if the
+  // plate is embedded inside other text or uses different spacing/punctuation,
+  // as long as the underlying letters/digits line up.
+  const targetIndex = cells.findIndex((cell) => findMatchingTargetPlate(cell));
   const plateIndex = targetIndex >= 0 ? targetIndex : cells.findIndex(isPlateLike);
 
   if (plateIndex < 0) return null;
 
+  const matchedTargetPlate = targetIndex >= 0 ? findMatchingTargetPlate(cells[targetIndex]) : null;
+
   const usedIndexes = new Set([plateIndex]);
-  const codeIndex = pickArrivalCodeCell(cells, plateIndex, usedIndexes);
-  if (codeIndex === undefined) return null;
-  usedIndexes.add(codeIndex);
+
+  // Try to classify the rest of the row by what each cell looks like (date,
+  // time, code, product, company). If the file's layout changed and a field
+  // can't be confidently classified, we no longer drop the whole row for it —
+  // the plate match is the only hard requirement. Anything we can't classify
+  // falls back to "whatever's left" rather than being discarded.
+  let codeIndex = pickArrivalCodeCell(cells, plateIndex, usedIndexes);
+  if (codeIndex !== undefined) usedIndexes.add(codeIndex);
 
   const dateIndex = pickNearbyCell(cells, plateIndex, isDateLike, usedIndexes);
   if (dateIndex !== undefined) usedIndexes.add(dateIndex);
@@ -165,14 +205,23 @@ function parseArrivalRow(row, extractionDate, extractionTime) {
   if (productIndex !== undefined) usedIndexes.add(productIndex);
 
   const companyIndex = pickNearbyCell(cells, plateIndex, looksLikeCompany, usedIndexes);
+  if (companyIndex !== undefined) usedIndexes.add(companyIndex);
+
+  if (codeIndex === undefined) {
+    codeIndex = pickFallbackCell(cells, usedIndexes);
+    if (codeIndex !== undefined) usedIndexes.add(codeIndex);
+  }
 
   return {
     arrival_date: dateIndex !== undefined ? toIsoDate(cells[dateIndex]) || extractionDate : extractionDate,
     batch_time: timeIndex !== undefined ? cells[timeIndex].slice(0, 5) : extractionTime,
-    license_plate: cells[plateIndex],
-    arrival_code: cells[codeIndex],
+    license_plate: matchedTargetPlate || cells[plateIndex],
+    arrival_code: codeIndex !== undefined ? cells[codeIndex] : "",
     product_type: productIndex !== undefined ? cells[productIndex] : "",
-    company: companyIndex !== undefined ? cells[companyIndex] : ""
+    company: companyIndex !== undefined ? cells[companyIndex] : "",
+    // Full set of cells from the matched row, kept around in case you want to
+    // show/debug exactly what was found, independent of the field guesses above.
+    raw_cells: cells
   };
 }
 
@@ -205,15 +254,29 @@ function readWorkbook(file) {
 
 async function parseBatchFile(file) {
   const workbook = await readWorkbook(file);
-  const sheetName = workbook.SheetNames[0];
-  if (!sheetName) throw new Error("The workbook has no sheets.");
-  const sheet = workbook.Sheets[sheetName];
-  const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
-  if (!matrix.length) throw new Error("No data rows found in the file.");
+  if (!workbook.SheetNames.length) throw new Error("The workbook has no sheets.");
+
   const now = new Date();
-  const parsed = parseRows(matrix, formatExtractionDate(now), formatExtractionTime(now));
-  if (!parsed.rows.length) throw new Error("No arrival rows found in the file.");
-  return parsed;
+  const extractionDate = formatExtractionDate(now);
+  const extractionTime = formatExtractionTime(now);
+
+  // Scan every sheet in the workbook, not just the first one — the target
+  // plate could land on any tab depending on how the file was put together.
+  const allRows = [];
+  const allTargetRows = [];
+
+  workbook.SheetNames.forEach((sheetName) => {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) return;
+    const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
+    if (!matrix.length) return;
+    const parsed = parseRows(matrix, extractionDate, extractionTime);
+    allRows.push(...parsed.rows);
+    allTargetRows.push(...parsed.targetRows);
+  });
+
+  if (!allRows.length) throw new Error("No arrival rows found in the file.");
+  return { rows: allRows, targetRows: allTargetRows };
 }
 
 // Returns rows from `incoming` that already exist in `existing`
