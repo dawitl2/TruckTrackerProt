@@ -1014,3 +1014,61 @@ tbody tr:hover td { background: rgba(216,31,68,0.02); }
   }
 }
 
+
+.route-panel-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  text-align: left;
+}
+
+.gps-route-panel.collapsed .route-panel-toggle {
+  border-bottom: none;
+}
+
+.route-panel-toggle-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.78rem;
+  font-weight: 800;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.route-panel-toggle-chevron {
+  font-size: 0.65rem;
+  color: var(--muted);
+}
+
+.gps-route-panel.collapsed {
+  width: auto;
+  max-width: 220px;
+}
+
+.route-details-toggle {
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--border-md);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 700;
+  transition: background 0.14s;
+}
+
+.route-details-toggle:hover { background: rgba(0,0,0,0.05); }
+
+@media (max-width: 720px) {
+  .gps-route-panel.collapsed {
+    width: auto;
+    max-width: calc(100% - 20px);
+  }
+}

@@ -310,15 +310,12 @@ app.use((req, res, next) => {
         });
         proxyRes.on("end", () => {
           // Automation script to inject inside the iframe same-origin context
-          const scriptToInject = `
+const scriptToInject = `
 <script>
 (function() {
   console.log("GPS Auto-Login & Navigation Script Active");
-  
-  // Post initial status
   window.parent.postMessage({ type: 'GPS_STATUS', status: 'Connecting...' }, '*');
-  
-  // Get plate from query params
+
   const urlParams = new URLSearchParams(window.location.search);
   const targetPlate = urlParams.get('plate');
   console.log("Target vehicle plate:", targetPlate);
@@ -327,7 +324,6 @@ app.use((req, res, next) => {
     const valueSetter = Object.getOwnPropertyDescriptor(element, 'value')?.set;
     const prototype = Object.getPrototypeOf(element);
     const prototypeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-    
     if (prototypeValueSetter && valueSetter !== prototypeValueSetter) {
       prototypeValueSetter.call(element, value);
     } else if (valueSetter) {
@@ -336,8 +332,6 @@ app.use((req, res, next) => {
       element.value = value;
     }
   };
-
-  let searchAttempts = 0;
 
   const toNumber = (value) => {
     const number = Number(String(value || "").replace(/[^0-9.-]/g, ""));
@@ -348,6 +342,95 @@ app.use((req, res, next) => {
     latitude !== null && longitude !== null && Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180
   );
 
+  const compactPlateText = (value) => String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+  const textMatchesTargetPlate = (text) => {
+    const source = String(text || "");
+    return Boolean(targetPlate && (source.includes(targetPlate) || compactPlateText(source).includes(compactPlateText(targetPlate))));
+  };
+
+  // The vehicle marker shows its plate as plain text right on the map —
+  // we don't need to search or open a popup to find it.
+  const findMarkerElement = () => {
+    const markers = Array.from(document.querySelectorAll(".leaflet-marker-pane .leaflet-marker-icon"));
+    return markers.find((el) => textMatchesTargetPlate(el.textContent)) || null;
+  };
+
+  // Tile <img> src URLs encode zoom/x/y (e.g. ".../16/40535/30731.png"),
+  // which is enough to turn a marker's screen position into real lat/lng.
+  const parseTileUrl = (src) => {
+    const text = String(src || "").split("?")[0];
+    const dot = text.lastIndexOf(".");
+    if (dot === -1) return null;
+    const ext = text.slice(dot + 1).toLowerCase();
+    if (ext !== "png" && ext !== "jpg" && ext !== "jpeg") return null;
+    const parts = text.slice(0, dot).split("/");
+    if (parts.length < 3) return null;
+    const tileY = parseInt(parts[parts.length - 1], 10);
+    const tileX = parseInt(parts[parts.length - 2], 10);
+    const zoom = parseInt(parts[parts.length - 3], 10);
+    if (!Number.isFinite(zoom) || !Number.isFinite(tileX) || !Number.isFinite(tileY)) return null;
+    return { zoom, tileX, tileY };
+  };
+
+  const findReferenceTile = () => {
+    const containers = Array.from(document.querySelectorAll(".leaflet-tile-pane .leaflet-tile-container"))
+      .map((el) => ({ el, z: parseInt(el.style.zIndex || "0", 10) || 0 }))
+      .sort((a, b) => b.z - a.z);
+
+    for (const { el } of containers) {
+      const images = Array.from(el.querySelectorAll("img"));
+      for (const img of images) {
+        const tile = parseTileUrl(img.getAttribute("src"));
+        if (!tile) continue;
+        const rect = img.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) return { ...tile, rect };
+      }
+    }
+    return null;
+  };
+
+  // getBoundingClientRect() already bakes in every ancestor CSS transform
+  // (pan, zoom-scale, zoom animation), so this stays correct without us
+  // having to reverse-engineer Leaflet's internal pane transforms.
+  const markerLatLngFromTile = (markerEl, referenceTile) => {
+    if (!markerEl || !referenceTile) return null;
+    const markerRect = markerEl.getBoundingClientRect();
+    if (!markerRect.width || !markerRect.height) return null;
+
+    const anchorX = markerRect.left + markerRect.width / 2;
+    const anchorY = markerRect.top + markerRect.height / 2;
+    const worldPxPerScreenX = 256 / referenceTile.rect.width;
+    const worldPxPerScreenY = 256 / referenceTile.rect.height;
+
+    const worldX = referenceTile.tileX * 256 + (anchorX - referenceTile.rect.left) * worldPxPerScreenX;
+    const worldY = referenceTile.tileY * 256 + (anchorY - referenceTile.rect.top) * worldPxPerScreenY;
+
+    const n = Math.pow(2, referenceTile.zoom);
+    const longitude = (worldX / (256 * n)) * 360 - 180;
+    const latRad = Math.atan(Math.sinh(Math.PI * (1 - (2 * worldY) / (256 * n))));
+    const latitude = (latRad * 180) / Math.PI;
+
+    return isValidCoordinate(latitude, longitude) ? { latitude, longitude } : null;
+  };
+
+  // The arrow SVG already draws its heading as transform: rotate(NNdeg) —
+  // 0deg = north, clockwise — so we read it instead of guessing from deltas.
+  const markerHeadingFromSvg = (markerEl) => {
+    const svg = markerEl && markerEl.querySelector("svg");
+    if (!svg) return null;
+    const styleAttr = svg.getAttribute("style") || "";
+    const start = styleAttr.indexOf("rotate(");
+    if (start === -1) return null;
+    const end = styleAttr.indexOf(")", start);
+    if (end === -1) return null;
+    const deg = parseFloat(styleAttr.slice(start + 7, end));
+    return Number.isFinite(deg) ? ((deg % 360) + 360) % 360 : null;
+  };
+
+  // Kept as a refinement layer: if a popup happens to be open (e.g. after
+  // our click below), its exact reported coordinates win over the
+  // tile-geometry estimate.
   const parseCoordinateText = (text) => {
     const source = String(text || "").replace(/\\s+/g, " ");
     const explicitCopyMatch = source.match(/handleCopyCoords\\([^0-9-]*(-?\\d{1,2}\\.\\d{3,})\\s*,\\s*(-?\\d{1,3}\\.\\d{3,})/i);
@@ -374,142 +457,12 @@ app.use((req, res, next) => {
     return match ? match[1].trim().slice(0, 220) : "";
   };
 
-  const getVehicleLabel = () => {
-    if (!targetPlate) return "";
-    const match = Array.from(document.querySelectorAll(".leaflet-popup-content, button, [role='button'], li, aside, [role='dialog'], [class*='vehicle'], [class*='detail']"))
-      .find((element) => {
-        const text = element.textContent || "";
-        return text.includes(targetPlate) && text.length < 1400;
-      });
-
-    return match ? (match.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 180) : "";
-  };
-
-  const getLayerText = (layer) => {
-    const parts = [];
-    try { if (layer.options?.title) parts.push(layer.options.title); } catch (error) {}
-    try { if (layer.options?.alt) parts.push(layer.options.alt); } catch (error) {}
-    try { if (layer.getTooltip?.()?.getContent) parts.push(String(layer.getTooltip().getContent())); } catch (error) {}
-    try { if (layer.getPopup?.()?.getContent) parts.push(String(layer.getPopup().getContent())); } catch (error) {}
-    try { if (layer._icon?.textContent) parts.push(layer._icon.textContent); } catch (error) {}
-    return parts.join(" ");
-  };
-
-  const findLeafletLocation = () => {
-    const maps = [];
-    Object.keys(window).some((key) => {
-      try {
-        const value = window[key];
-        if (value && typeof value.eachLayer === "function" && typeof value.latLngToContainerPoint === "function") {
-          maps.push(value);
-        }
-      } catch (error) {}
-      return maps.length > 4;
-    });
-
-    for (const map of maps) {
-      const candidates = [];
-      try {
-        map.eachLayer((layer) => {
-          if (!layer || typeof layer.getLatLng !== "function") return;
-          const latLng = layer.getLatLng();
-          const latitude = toNumber(latLng && latLng.lat);
-          const longitude = toNumber(latLng && latLng.lng);
-          if (isValidCoordinate(latitude, longitude)) {
-            const layerText = getLayerText(layer);
-            const matchesPlate = targetPlate && layerText.includes(targetPlate);
-            const popupOpen = Boolean(layer.isPopupOpen?.() || layer.getPopup?.()?.isOpen?.());
-            candidates.push({
-              latitude,
-              longitude,
-              heading: toNumber(layer.options && (layer.options.rotationAngle || layer.options.angle || layer.options.heading || layer.options.rotation)),
-              score: (matchesPlate ? 100 : 0) + (popupOpen ? 50 : 0) + (layerText ? 5 : 0)
-            });
-          }
-        });
-      } catch (error) {}
-      if (candidates.length) {
-        candidates.sort((a, b) => b.score - a.score);
-        return candidates[0];
-      }
-    }
-
-    return null;
-  };
-
-  const publishLocation = () => {
-    const popupElements = Array.from(document.querySelectorAll(".leaflet-popup-content, .custom-vehicle-popup, .leaflet-popup"));
-    const popupText = popupElements
-      .map((element) => [
-        element.innerText,
-        element.textContent,
-        Array.from(element.querySelectorAll("[onclick]")).map((node) => node.getAttribute("onclick")).join(" ")
-      ].filter(Boolean).join(" "))
-      .find((text) => textMatchesTargetPlate(text) || /Coordinates/i.test(text));
-    const bodyText = [popupText, document.body?.innerText, document.body?.textContent].filter(Boolean).join(" ");
-    const location = parseCoordinateText(bodyText) || findLeafletLocation();
-    if (!location) return;
-
-    const heading = location.heading !== null && location.heading !== undefined
-      ? location.heading
-      : parseHeadingText(bodyText);
-
-    window.parent.postMessage({
-      type: 'GPS_LOCATION',
-      latitude: location.latitude,
-      longitude: location.longitude,
-      heading,
-      label: getPopupLocationLabel(bodyText) || getVehicleLabel()
-    }, '*');
-    window.parent.postMessage({ type: 'GPS_STATUS', status: 'GPS coordinates found' }, '*');
-  };
-
-  const textMatchesTargetPlate = (text) => {
-    const compact = (value) => String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-    return Boolean(targetPlate && (String(text || "").includes(targetPlate) || compact(text).includes(compact(targetPlate))));
-  };
-
   const clickLikeUser = (element) => {
     if (!element) return false;
     ["mouseover", "mousedown", "mouseup", "click"].forEach((type) => {
       element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
     });
     return true;
-  };
-
-  const findTargetMapElement = () => {
-    const mapSelectors = [
-      ".leaflet-popup-content",
-      ".leaflet-marker-icon",
-      ".leaflet-tooltip",
-      ".leaflet-marker-pane div",
-      ".leaflet-pane div",
-      ".leaflet-container span",
-      ".leaflet-container button"
-    ].join(", ");
-
-    const match = Array.from(document.querySelectorAll(mapSelectors))
-      .find((element) => {
-        const text = element.textContent || "";
-        return textMatchesTargetPlate(text) && text.length < 500;
-      });
-
-    if (!match) return null;
-    return match.closest(".leaflet-marker-icon, .leaflet-tooltip, .leaflet-popup-content, .leaflet-pane > div") || match;
-  };
-
-  const findTargetListElement = () => {
-    return Array.from(document.querySelectorAll("button, [role='button'], li"))
-      .find((element) => {
-        const text = element.textContent || "";
-        const blocked = element.closest("[aria-label*='Notifications'], [class*='notification'], [class*='alert']");
-        return !blocked && textMatchesTargetPlate(text) && text.length < 900;
-      });
-  };
-
-  const clickTargetVehicle = () => {
-    const targetElement = findTargetMapElement() || findTargetListElement();
-    return clickLikeUser(targetElement);
   };
 
   const closeAlertPanels = () => {
@@ -542,11 +495,39 @@ app.use((req, res, next) => {
     });
   };
 
-  const intervalId = setInterval(() => {
+  // The site's "Layers" control is a custom button (lucide-layers icon),
+  // not Leaflet's built-in .leaflet-control-layers-toggle.
+  const findLayersToggleButton = () => {
+    const icon = document.querySelector("svg.lucide-layers");
+    return icon ? icon.closest("button") : null;
+  };
+
+  const attemptSatelliteSwitch = () => {
+    if (window.__switchedToSatellite) return;
+    const toggle = findLayersToggleButton();
+    if (!toggle) return;
+    toggle.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    toggle.click();
+    setTimeout(() => {
+      const candidates = Array.from(document.querySelectorAll("button, [role='menuitem'], [role='option'], li, label, span"));
+      const match = candidates.find((el) => {
+        const text = (el.textContent || "").toLowerCase();
+        return text.indexOf("satellite") !== -1 || text.indexOf("hybrid") !== -1 || text.indexOf("aerial") !== -1;
+      });
+      if (match) {
+        match.click();
+        window.__switchedToSatellite = true;
+      }
+    }, 450);
+  };
+
+  let searchAttempts = 0;
+  let lastClickedPlate = null;
+
+  const tick = () => {
     try {
       closeAlertPanels();
 
-      // 1. Check for Login page
       const usernameInput = document.getElementById("username");
       const passwordInput = document.getElementById("password");
       const submitBtn = document.querySelector("button[type='submit']");
@@ -561,84 +542,75 @@ app.use((req, res, next) => {
           setNativeValue(passwordInput, "E3456789");
           passwordInput.dispatchEvent(new Event("input", { bubbles: true }));
         }
-
         if (usernameInput.value === "enkua" && passwordInput.value === "E3456789") {
-          console.log("Submitting login form...");
           window.parent.postMessage({ type: 'GPS_STATUS', status: 'Authenticating...' }, '*');
           submitBtn.click();
         }
         return;
       }
 
-      // 2. Check for Dashboard and search input
-      publishLocation();
-      const searchInput = document.querySelector("input[placeholder*='Search']");
-      if (searchInput && targetPlate) {
-        if (window.__lastSelectedPlate !== targetPlate) {
-          window.parent.postMessage({ type: 'GPS_STATUS', status: 'Locating vehicle...' }, '*');
-          if (searchInput.value !== targetPlate) {
-            setNativeValue(searchInput, targetPlate);
-            searchInput.dispatchEvent(new Event("input", { bubbles: true }));
-          }
+      if (!targetPlate) {
+        window.parent.postMessage({ type: 'GPS_STATUS', status: 'Missing plate' }, '*');
+        return;
+      }
 
-          if (clickTargetVehicle()) {
-            window.__lastSelectedPlate = targetPlate;
-            console.log("Clicked matching vehicle:", targetPlate);
-            setTimeout(clickTargetVehicle, 500);
-            setTimeout(clickTargetVehicle, 1500);
-            setTimeout(closeAlertPanels, 250);
-            setTimeout(closeAlertPanels, 800);
-            setTimeout(closeAlertPanels, 1800);
-            setTimeout(publishLocation, 900);
-            setTimeout(publishLocation, 2000);
-            window.parent.postMessage({ type: 'GPS_STATUS', status: 'Live Tracking' }, '*');
-          } else {
-            searchAttempts++;
-            if (searchAttempts > 15) {
-              window.parent.postMessage({ type: 'GPS_STATUS', status: 'Vehicle not found' }, '*');
-            }
-          }
-        } else {
-          clickTargetVehicle();
-          closeAlertPanels();
-          publishLocation();
-          window.parent.postMessage({ type: 'GPS_STATUS', status: 'Live Tracking' }, '*');
-        }
-        
-        // 3. Switch to Satellite View
-        const layersToggle = document.querySelector('.leaflet-control-layers-toggle');
-        if (layersToggle && !window.__switchedToSatellite) {
-          // Open layers control
-          layersToggle.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-          layersToggle.click();
-          
-          setTimeout(() => {
-            const selectors = Array.from(document.querySelectorAll('.leaflet-control-layers-selector, label, span'));
-            const satLabel = selectors.find(el => {
-              const text = el.textContent?.toLowerCase() || '';
-              return text.includes('sat') || text.includes('hyb') || text.includes('aerial') || text.includes('sate');
-            });
-            
-            if (satLabel) {
-              const input = satLabel.tagName === 'INPUT' ? satLabel : satLabel.querySelector('input') || satLabel.parentElement.querySelector('input');
-              if (input && !input.checked) {
-                input.click();
-                window.__switchedToSatellite = true;
-                console.log("Switched to satellite view");
-              } else if (satLabel.tagName !== 'INPUT') {
-                satLabel.click();
-                window.__switchedToSatellite = true;
-                console.log("Clicked satellite label");
-              }
-            }
-          }, 500);
-        }
+      const markerEl = findMarkerElement();
+
+      if (!markerEl) {
+        searchAttempts++;
+        window.parent.postMessage({
+          type: 'GPS_STATUS',
+          status: searchAttempts > 20 ? 'Vehicle not found' : 'Locating vehicle...'
+        }, '*');
+        return;
+      }
+
+      searchAttempts = 0;
+
+      if (lastClickedPlate !== targetPlate) {
+        clickLikeUser(markerEl);
+        lastClickedPlate = targetPlate;
+        setTimeout(closeAlertPanels, 250);
+        setTimeout(closeAlertPanels, 900);
+        attemptSatelliteSwitch();
+      }
+
+      const referenceTile = findReferenceTile();
+      const fromTile = referenceTile ? markerLatLngFromTile(markerEl, referenceTile) : null;
+      const svgHeading = markerHeadingFromSvg(markerEl);
+
+      const popupText = Array.from(document.querySelectorAll(".leaflet-popup-content, .custom-vehicle-popup, .leaflet-popup"))
+        .map((element) => [
+          element.innerText,
+          element.textContent,
+          Array.from(element.querySelectorAll("[onclick]")).map((node) => node.getAttribute("onclick")).join(" ")
+        ].filter(Boolean).join(" "))
+        .find((text) => textMatchesTargetPlate(text) || /Coordinates/i.test(text));
+
+      const popupCoords = popupText ? parseCoordinateText(popupText) : null;
+      const finalCoords = popupCoords || fromTile;
+
+      if (finalCoords) {
+        const finalHeading = svgHeading !== null ? svgHeading : (popupText ? parseHeadingText(popupText) : null);
+
+        window.parent.postMessage({
+          type: 'GPS_LOCATION',
+          latitude: finalCoords.latitude,
+          longitude: finalCoords.longitude,
+          heading: finalHeading,
+          label: popupText ? getPopupLocationLabel(popupText) : ""
+        }, '*');
+        window.parent.postMessage({ type: 'GPS_STATUS', status: 'Live Tracking' }, '*');
+      } else {
+        window.parent.postMessage({ type: 'GPS_STATUS', status: 'Locating vehicle...' }, '*');
       }
     } catch (err) {
       console.error("Auto-login script error:", err);
       window.parent.postMessage({ type: 'GPS_STATUS', status: 'Error' }, '*');
     }
-  }, 1000);
+  };
+
+  const intervalId = setInterval(tick, 1000);
 })();
 </script>
 `;

@@ -9,6 +9,7 @@ const SUPABASE_KEY = "sb_publishable_kF30JdMpqmsM9VmXPZLYAw_i8V58YJJ";
 const SUPABASE_TABLE = "truck_arrivals";
 const SUBDIVIDERS_TABLE = "subdividers";
 
+
 const DRIVERS = [
   { id: 1, name: "Ermiyas Atakilt", photo: "/driver1.png" },
   { id: 2, name: "Dawit", photo: "/driver2.png" },
@@ -551,9 +552,92 @@ function extractGpsLocationLabelFromText(text) {
   return match ? match[1].trim().slice(0, 220) : "";
 }
 
+function parseTileUrl(src) {
+  const text = String(src || "").split("?")[0];
+  const dot = text.lastIndexOf(".");
+  if (dot === -1) return null;
+  const ext = text.slice(dot + 1).toLowerCase();
+  if (ext !== "png" && ext !== "jpg" && ext !== "jpeg") return null;
+  const parts = text.slice(0, dot).split("/");
+  if (parts.length < 3) return null;
+  const tileY = parseInt(parts[parts.length - 1], 10);
+  const tileX = parseInt(parts[parts.length - 2], 10);
+  const zoom = parseInt(parts[parts.length - 3], 10);
+  if (!Number.isFinite(zoom) || !Number.isFinite(tileX) || !Number.isFinite(tileY)) return null;
+  return { zoom, tileX, tileY };
+}
+
+function findReferenceTile(doc) {
+  if (!doc) return null;
+  const containers = Array.from(doc.querySelectorAll(".leaflet-tile-pane .leaflet-tile-container"))
+    .map((el) => ({ el, z: parseInt(el.style.zIndex || "0", 10) || 0 }))
+    .sort((a, b) => b.z - a.z);
+
+  for (const { el } of containers) {
+    const images = Array.from(el.querySelectorAll("img"));
+    for (const img of images) {
+      const tile = parseTileUrl(img.getAttribute("src"));
+      if (!tile) continue;
+      const rect = img.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) return { ...tile, rect };
+    }
+  }
+  return null;
+}
+
+function markerLatLngFromTile(markerEl, referenceTile) {
+  if (!markerEl || !referenceTile) return null;
+  const markerRect = markerEl.getBoundingClientRect();
+  if (!markerRect.width || !markerRect.height) return null;
+
+  const anchorX = markerRect.left + markerRect.width / 2;
+  const anchorY = markerRect.top + markerRect.height / 2;
+  const worldPxPerScreenX = 256 / referenceTile.rect.width;
+  const worldPxPerScreenY = 256 / referenceTile.rect.height;
+
+  const worldX = referenceTile.tileX * 256 + (anchorX - referenceTile.rect.left) * worldPxPerScreenX;
+  const worldY = referenceTile.tileY * 256 + (anchorY - referenceTile.rect.top) * worldPxPerScreenY;
+
+  const n = 2 ** referenceTile.zoom;
+  const longitude = (worldX / (256 * n)) * 360 - 180;
+  const latRad = Math.atan(Math.sinh(Math.PI * (1 - (2 * worldY) / (256 * n))));
+  const latitude = (latRad * 180) / Math.PI;
+
+  return isValidCoordinate(latitude, longitude) ? { latitude, longitude } : null;
+}
+
+function markerHeadingFromSvg(markerEl) {
+  const svg = markerEl?.querySelector("svg");
+  if (!svg) return null;
+  const styleAttr = svg.getAttribute("style") || "";
+  const start = styleAttr.indexOf("rotate(");
+  if (start === -1) return null;
+  const end = styleAttr.indexOf(")", start);
+  if (end === -1) return null;
+  const deg = parseFloat(styleAttr.slice(start + 7, end));
+  return Number.isFinite(deg) ? ((deg % 360) + 360) % 360 : null;
+}
+
+function findVehicleMarkerElement(doc, targetPlate) {
+  if (!doc || !targetPlate) return null;
+  const markers = Array.from(doc.querySelectorAll(".leaflet-marker-pane .leaflet-marker-icon"));
+  return markers.find((el) => gpsTextMatchesPlate(el.textContent, targetPlate)) || null;
+}
+
 function scrapeGpsDocument(doc, targetPlate) {
   if (!doc?.body) return null;
 
+  const markerEl = findVehicleMarkerElement(doc, targetPlate);
+
+  if (markerEl) {
+    const referenceTile = findReferenceTile(doc);
+    const fromTile = referenceTile ? markerLatLngFromTile(markerEl, referenceTile) : null;
+    if (fromTile) {
+      return { ...fromTile, heading: markerHeadingFromSvg(markerEl), label: "" };
+    }
+  }
+
+  // Fallback: a popup happens to be open with explicit coordinate text.
   const selectors = [
     ".leaflet-popup-content",
     ".custom-vehicle-popup",
@@ -596,12 +680,10 @@ function buildRouteInsight(location, previousLocation) {
     hasLiveLocation: false,
     start: ROUTE_NODES.start,
     destination: ROUTE_NODES.destination,
-    directionLabel: "Opening GPS direction",
+    directionLabel: "GPS lags in djibouti districts",
     distanceLeft: "-",
     timeLeft: "-",
     progress: 0,
-    placeLabel: "Opening truck location",
-    placeDetail: "The panel will calculate distance and time when GPS sends coordinates.",
     imageUrl: getPlaceImageUrl("Bole Addis Ababa fuel station")
   };
 
@@ -708,18 +790,24 @@ function App() {
   const [gpsReloadKey, setGpsReloadKey] = useState(0);
   const [gpsLocation, setGpsLocation] = useState(null);
   const previousGpsLocationRef = useRef(null);
-  const gpsPlate = getMapPlateFormat(selectedPlate);
-  const gpsFrameUrl = getGpsTrackingUrl(gpsPlate);
-  const gpsStatusClass = getStatusClass(gpsStatus);
-  const routeInsight = buildRouteInsight(gpsLocation, previousGpsLocationRef.current);
 
-  const openGpsModal = () => {
-    setGpsFrameError("");
-    setGpsStatus("Connecting...");
-    setGpsLocation(null);
-    previousGpsLocationRef.current = null;
-    setIsGpsModalOpen(true);
-  };
+ const [isRoutePanelCollapsed, setIsRoutePanelCollapsed] = useState(false);
+const [showRouteDetails, setShowRouteDetails] = useState(false);
+
+const gpsPlate = getMapPlateFormat(selectedPlate);
+const gpsFrameUrl = getGpsTrackingUrl(gpsPlate);
+const gpsStatusClass = getStatusClass(gpsStatus);
+const routeInsight = buildRouteInsight(gpsLocation, previousGpsLocationRef.current);
+
+const openGpsModal = () => {
+  setGpsFrameError("");
+  setGpsStatus("Connecting...");
+  setGpsLocation(null);
+  previousGpsLocationRef.current = null;
+  setIsRoutePanelCollapsed(false);
+  setShowRouteDetails(false);
+  setIsGpsModalOpen(true);
+};
 
   const closeGpsModal = () => {
     setIsGpsModalOpen(false);
@@ -1856,62 +1944,124 @@ function App() {
                   setGpsStatus("Connection failed");
                 }}
               />
-              <aside className="gps-route-panel" aria-label="Route estimate">
-                <div className="route-panel-image">
-                  <img
-                    src={routeInsight.imageUrl}
-                    alt={routeInsight.placeLabel}
-                    loading="lazy"
-                    referrerPolicy="no-referrer"
-                    onError={(e) => { e.currentTarget.style.display = "none"; }}
-                  />
-                </div>
-                <div className="route-panel-content">
-                  <div className="route-panel-head">
-                    <div>
-                      <span className="route-kicker">{currentDriver.name} · {formatPlateLabel(selectedPlate)}</span>
-                      <strong>{routeInsight.placeLabel}</strong>
-                    </div>
-                    <span className={`route-live-dot${routeInsight.hasLiveLocation ? " active" : ""}`} />
-                  </div>
-                  <p className="route-place-detail">{routeInsight.placeDetail}</p>
 
-                  <div className="route-stat-grid">
-                    <div>
-                      <span>Distance left</span>
-                      <strong>{routeInsight.distanceLeft}</strong>
-                    </div>
-                    <div>
-                      <span>Time left @ 70km/h</span>
-                      <strong>{routeInsight.timeLeft}</strong>
-                    </div>
-                  </div>
 
-                  <div className="route-progress">
-                    <div className="route-progress-bar" style={{ width: `${routeInsight.progress}%` }} />
-                  </div>
+              <aside
+  className={`gps-route-panel${isRoutePanelCollapsed ? " collapsed" : ""}`}
+  aria-label="Route estimate"
+>
+  <button
+    type="button"
+    className="route-panel-toggle"
+    onClick={() => setIsRoutePanelCollapsed((v) => !v)}
+    aria-expanded={!isRoutePanelCollapsed}
+    title={isRoutePanelCollapsed ? "Show route panel" : "Hide route panel"}
+  >
+    <span className={`route-live-dot${routeInsight.hasLiveLocation ? " active" : ""}`} />
+    <span className="route-panel-toggle-label">
+      {isRoutePanelCollapsed ? routeInsight.placeLabel : "Route"}
+    </span>
+    <span className="route-panel-toggle-chevron">
+      {isRoutePanelCollapsed ? "▲" : "▼"}
+    </span>
+  </button>
 
-                  <div className="route-node-list">
-                    <div>
-                      <span>Start</span>
-                      <strong>{routeInsight.start.shortName}</strong>
-                      <small>{routeInsight.start.location}</small>
-                      <small>{formatCoordinatePair(routeInsight.start.latitude, routeInsight.start.longitude)}</small>
-                    </div>
-                    <div>
-                      <span>Destination</span>
-                      <strong>{routeInsight.destination.shortName}</strong>
-                      <small>{routeInsight.destination.location}</small>
-                      <small>{formatCoordinatePair(routeInsight.destination.latitude, routeInsight.destination.longitude)}</small>
-                    </div>
-                  </div>
+  {!isRoutePanelCollapsed ? (
+    <>
+      <div className="route-panel-image">
+        <img
+          src={routeInsight.imageUrl}
+          alt={routeInsight.placeLabel}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={(e) => {
+            e.currentTarget.style.display = "none";
+          }}
+        />
+      </div>
 
-                  <div className="route-direction">
-                    <span>{routeInsight.directionLabel}</span>
-                    {routeInsight.directionConfidence ? <small>{routeInsight.directionConfidence}</small> : null}
-                  </div>
-                </div>
-              </aside>
+      <div className="route-panel-content">
+        <div className="route-panel-head">
+          <div>
+            <span className="route-kicker">
+              {currentDriver.name} · {formatPlateLabel(selectedPlate)}
+            </span>
+            <strong>{routeInsight.placeLabel}</strong>
+          </div>
+        </div>
+
+        <p className="route-place-detail">{routeInsight.placeDetail}</p>
+
+        <div className="route-stat-grid">
+          <div>
+            <span>Distance left</span>
+            <strong>{routeInsight.distanceLeft}</strong>
+          </div>
+          <div>
+            <span>Time left @ 70km/h</span>
+            <strong>{routeInsight.timeLeft}</strong>
+          </div>
+        </div>
+
+        <div className="route-progress">
+          <div
+            className="route-progress-bar"
+            style={{ width: `${routeInsight.progress}%` }}
+          />
+        </div>
+
+        <button
+          type="button"
+          className="route-details-toggle"
+          onClick={() => setShowRouteDetails((v) => !v)}
+          aria-expanded={showRouteDetails}
+        >
+          {showRouteDetails ? "Hide details" : "Show start / destination"}
+        </button>
+
+        {showRouteDetails ? (
+          <>
+            <div className="route-node-list">
+              <div>
+                <span>Start</span>
+                <strong>{routeInsight.start.shortName}</strong>
+                <small>{routeInsight.start.location}</small>
+                <small>
+                  {formatCoordinatePair(
+                    routeInsight.start.latitude,
+                    routeInsight.start.longitude
+                  )}
+                </small>
+              </div>
+
+              <div>
+                <span>Destination</span>
+                <strong>{routeInsight.destination.shortName}</strong>
+                <small>{routeInsight.destination.location}</small>
+                <small>
+                  {formatCoordinatePair(
+                    routeInsight.destination.latitude,
+                    routeInsight.destination.longitude
+                  )}
+                </small>
+              </div>
+            </div>
+
+            <div className="route-direction">
+              <span>{routeInsight.directionLabel}</span>
+              {routeInsight.directionConfidence ? (
+                <small>{routeInsight.directionConfidence}</small>
+              ) : null}
+            </div>
+          </>
+        ) : null}
+      </div>
+    </>
+  ) : null}
+</aside>
+
+
+
             </div>
           </div>
         </div>
