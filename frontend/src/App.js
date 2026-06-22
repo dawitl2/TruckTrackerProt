@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import * as XLSX from "xlsx";
 import "./App.css";
 
-const TARGET_LICENSE_PLATES = ["A06725/32431", "A09321/32699"];
+const TARGET_LICENSE_PLATES = ["A06725/32431", "A09321/32669"];
 const TARGET_LICENSE_PLATE_SET = new Set(TARGET_LICENSE_PLATES.map(normalizePlate));
 const SUPABASE_URL = "https://ceaznmvgerreomiklcwo.supabase.co";
 const SUPABASE_KEY = "sb_publishable_kF30JdMpqmsM9VmXPZLYAw_i8V58YJJ";
