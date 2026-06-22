@@ -24,7 +24,7 @@ const upload = multer({
 const TARGET_REFERENCE = "FT00211QWBK0";
 const TABLE_NAME = "bank_transactions";
 const TRUCK_ARRIVALS_TABLE = "truck_arrivals";
-const TARGET_LICENSE_PLATES = ["A06725/32431", "A09321/32699"];
+const TARGET_LICENSE_PLATES = ["A06725/32431", "A09321/32669"];
 const TARGET_LICENSE_PLATE_SET = new Set(TARGET_LICENSE_PLATES.map(normalizePlateValue));
 
 const supabaseUrl = process.env.SUPABASE_URL || "";
