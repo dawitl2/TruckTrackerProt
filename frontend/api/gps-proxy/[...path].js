@@ -166,15 +166,34 @@ function gpsAutomationScript() {
     return match ? match[1].trim().slice(0, 220) : "";
   }
 
+  function getElementSearchText(element) {
+    if (!element) return "";
+    var attributes = ["onclick", "title", "aria-label", "alt", "data-plate", "data-license", "data-registration", "class", "src", "style"];
+    var ownText = attributes.map(function(name) {
+      return element.getAttribute && element.getAttribute(name);
+    }).filter(Boolean).join(" ");
+    var childText = Array.from(element.querySelectorAll ? element.querySelectorAll("*") : [])
+      .slice(0, 80)
+      .map(function(node) {
+        return attributes.map(function(name) {
+          return node.getAttribute && node.getAttribute(name);
+        }).filter(Boolean).join(" ");
+      })
+      .filter(Boolean)
+      .join(" ");
+
+    return [element.innerText, element.textContent, ownText, childText].filter(Boolean).join(" ");
+  }
+
   function getVehicleLabel() {
     if (!targetPlate) return "";
     var match = Array.from(document.querySelectorAll(".leaflet-popup-content, button, [role='button'], li, aside, [role='dialog'], [class*='vehicle'], [class*='detail']"))
       .find(function(element) {
-        var text = element.textContent || "";
-        return text.includes(targetPlate) && text.length < 1400;
+        var text = getElementSearchText(element);
+        return textMatchesTargetPlate(text) && text.length < 1400;
       });
 
-    return match ? (match.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 180) : "";
+    return match ? getElementSearchText(match).replace(/\\s+/g, " ").trim().slice(0, 180) : "";
   }
 
   function getLayerText(layer) {
@@ -183,7 +202,7 @@ function gpsAutomationScript() {
     try { if (layer.options && layer.options.alt) parts.push(layer.options.alt); } catch (error) {}
     try { if (layer.getTooltip && layer.getTooltip() && layer.getTooltip().getContent) parts.push(String(layer.getTooltip().getContent())); } catch (error) {}
     try { if (layer.getPopup && layer.getPopup() && layer.getPopup().getContent) parts.push(String(layer.getPopup().getContent())); } catch (error) {}
-    try { if (layer._icon && layer._icon.textContent) parts.push(layer._icon.textContent); } catch (error) {}
+    try { if (layer._icon) parts.push(getElementSearchText(layer._icon)); } catch (error) {}
     return parts.join(" ");
   }
 
@@ -209,7 +228,7 @@ function gpsAutomationScript() {
           var longitude = toNumber(latLng && latLng.lng);
           if (isValidCoordinate(latitude, longitude)) {
             var layerText = getLayerText(layer);
-            var matchesPlate = targetPlate && layerText.includes(targetPlate);
+            var matchesPlate = textMatchesTargetPlate(layerText);
             var popupOpen = Boolean((layer.isPopupOpen && layer.isPopupOpen()) || (layer.getPopup && layer.getPopup() && layer.getPopup().isOpen && layer.getPopup().isOpen()));
             candidates.push({
               latitude: latitude,
@@ -286,7 +305,7 @@ function gpsAutomationScript() {
 
     var match = Array.from(document.querySelectorAll(mapSelectors))
       .find(function(element) {
-        var text = element.textContent || "";
+        var text = getElementSearchText(element);
         return textMatchesTargetPlate(text) && text.length < 500;
       });
 
@@ -297,7 +316,7 @@ function gpsAutomationScript() {
   function findTargetListElement() {
     return Array.from(document.querySelectorAll("button, [role='button'], li"))
       .find(function(element) {
-        var text = element.textContent || "";
+        var text = getElementSearchText(element);
         var blocked = element.closest("[aria-label*='Notifications'], [class*='notification'], [class*='alert']");
         return !blocked && textMatchesTargetPlate(text) && text.length < 900;
       });

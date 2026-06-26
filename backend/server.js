@@ -351,9 +351,22 @@ const scriptToInject = `
 
   // The vehicle marker shows its plate as plain text right on the map —
   // we don't need to search or open a popup to find it.
+  const getElementSearchText = (element) => {
+    if (!element) return "";
+    const attributes = ["onclick", "title", "aria-label", "alt", "data-plate", "data-license", "data-registration", "class", "src", "style"];
+    const ownText = attributes.map((name) => element.getAttribute && element.getAttribute(name)).filter(Boolean).join(" ");
+    const childText = Array.from(element.querySelectorAll ? element.querySelectorAll("*") : [])
+      .slice(0, 80)
+      .map((node) => attributes.map((name) => node.getAttribute && node.getAttribute(name)).filter(Boolean).join(" "))
+      .filter(Boolean)
+      .join(" ");
+
+    return [element.innerText, element.textContent, ownText, childText].filter(Boolean).join(" ");
+  };
+
   const findMarkerElement = () => {
     const markers = Array.from(document.querySelectorAll(".leaflet-marker-pane .leaflet-marker-icon"));
-    return markers.find((el) => textMatchesTargetPlate(el.textContent)) || null;
+    return markers.find((el) => textMatchesTargetPlate(getElementSearchText(el))) || null;
   };
 
   // Tile <img> src URLs encode zoom/x/y (e.g. ".../16/40535/30731.png"),
@@ -583,6 +596,7 @@ const scriptToInject = `
         .map((element) => [
           element.innerText,
           element.textContent,
+          getElementSearchText(element),
           Array.from(element.querySelectorAll("[onclick]")).map((node) => node.getAttribute("onclick")).join(" ")
         ].filter(Boolean).join(" "))
         .find((text) => textMatchesTargetPlate(text) || /Coordinates/i.test(text));

@@ -1,0 +1,638 @@
+.driver-location-btn {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--red);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--red-deep);
+  box-shadow: 0 3px 10px rgba(216,31,68,0.3);
+  cursor: pointer;
+  transition: transform 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.driver-location-btn:hover {
+  background: var(--red-deep);
+  transform: scale(1.08) rotate(5deg);
+  box-shadow: 0 5px 15px rgba(216,31,68,0.5);
+}
+
+.driver-location-btn:active {
+  transform: scale(0.95);
+}
+
+.driver-location-btn .location-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.gps-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(15, 13, 12, 0.42);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: gpsFadeIn 0.24s ease both;
+}
+
+.gps-modal-content {
+  width: min(1480px, 98vw);
+  height: min(940px, 96dvh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.72);
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(15, 13, 12, 0.32);
+  animation: gpsScaleIn 0.24s ease both;
+}
+
+.gps-modal-header {
+  flex: 0 0 auto;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px 10px 16px;
+  background: rgba(255,255,255,0.96);
+  border-bottom: 1px solid var(--border);
+}
+
+.gps-modal-title-group {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+}
+
+.location-icon-animated {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  color: var(--red);
+  animation: gpsPinPulse 1.8s infinite ease-in-out;
+}
+
+.gps-modal-title-details {
+  min-width: 0;
+}
+
+.gps-modal-title-details h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 900;
+  line-height: 1.12;
+}
+
+.gps-modal-title-details span {
+  display: block;
+  max-width: min(54vw, 520px);
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gps-modal-controls {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.gps-status-badge {
+  min-width: 0;
+  max-width: 190px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  padding: 6px 10px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.gps-status-badge::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-connecting,
+.status-initializing,
+.status-still-searching {
+  color: #1e4fa3;
+  background: rgba(30,79,163,0.08);
+  border-color: rgba(30,79,163,0.16);
+}
+
+.status-connecting::before,
+.status-initializing::before,
+.status-still-searching::before,
+.status-logging-in::before,
+.status-authenticating::before,
+.status-locating-vehicle::before,
+.status-syncing-map::before {
+  animation: gpsPulseRate 1.2s infinite ease-in-out;
+}
+
+.status-logging-in,
+.status-authenticating,
+.status-locating-vehicle,
+.status-syncing-map,
+.status-gps-coordinates-found {
+  color: #b46904;
+  background: rgba(232,153,10,0.1);
+  border-color: rgba(232,153,10,0.2);
+}
+
+.status-live-tracking,
+.status-live {
+  color: var(--green-deep);
+  background: rgba(22,163,74,0.1);
+  border-color: rgba(22,163,74,0.22);
+}
+
+.status-live-tracking::before,
+.status-live::before {
+  animation: gpsPingRate 1.5s infinite ease-in-out;
+}
+
+.status-connection-timeout,
+.status-connection-failed,
+.status-error,
+.status-closed,
+.status-proxy-unavailable,
+.status-vehicle-not-found,
+.status-missing-plate {
+  color: var(--red-deep);
+  background: rgba(216,31,68,0.08);
+  border-color: rgba(216,31,68,0.18);
+}
+
+.gps-modal-close {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 1rem;
+  font-weight: 900;
+  line-height: 1;
+  transition: background 0.16s, color 0.16s, transform 0.16s;
+}
+
+.gps-modal-close:hover {
+  color: #fff;
+  background: var(--red);
+  transform: rotate(90deg);
+}
+
+.gps-modal-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: #f1f5f9;
+}
+
+.gps-iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
+}
+
+.gps-panel-message {
+  position: absolute;
+  z-index: 4;
+  inset: 50% auto auto 50%;
+  width: min(420px, calc(100% - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 22px;
+  transform: translate(-50%, -50%);
+  border-radius: 8px;
+  border: 1px solid rgba(216,31,68,0.22);
+  background: rgba(255,255,255,0.96);
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+
+.gps-panel-message strong {
+  color: var(--red-deep);
+  font-size: 1rem;
+}
+
+.gps-panel-message p {
+  color: var(--muted);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.gps-panel-message button {
+  align-self: center;
+  min-width: 110px;
+  height: 40px;
+  padding: 0 18px;
+  border-radius: 999px;
+  color: #fff;
+  background: var(--red);
+  box-shadow: 0 4px 14px rgba(216,31,68,0.28);
+  font-size: 0.85rem;
+  font-weight: 900;
+}
+
+.gps-panel-message button:hover {
+  background: var(--red-deep);
+}
+
+.gps-route-sheet {
+  position: absolute;
+  z-index: 3;
+  right: 14px;
+  bottom: 14px;
+  width: min(430px, calc(100% - 28px));
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid rgba(15, 13, 12, 0.12);
+  background: rgba(255,255,255,0.96);
+  box-shadow: 0 18px 46px rgba(15, 13, 12, 0.2);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.route-sheet-summary {
+  width: 100%;
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  text-align: left;
+  background: rgba(255,255,255,0.94);
+}
+
+.route-live-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #d97706;
+  box-shadow: 0 0 0 5px rgba(217,119,6,0.14);
+}
+
+.route-live-dot.active {
+  background: var(--green);
+  box-shadow: 0 0 0 5px rgba(22,163,74,0.14);
+}
+
+.route-summary-text {
+  min-width: 0;
+}
+
+.route-summary-text strong,
+.route-summary-text small,
+.route-summary-stat strong,
+.route-summary-stat small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.route-summary-text strong {
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 900;
+  line-height: 1.15;
+}
+
+.route-summary-text small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
+
+.route-summary-stat {
+  min-width: 72px;
+  text-align: right;
+}
+
+.route-summary-stat strong {
+  color: var(--red-deep);
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  font-weight: 900;
+  line-height: 1.1;
+}
+
+.route-summary-stat small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.15;
+}
+
+.route-panel-toggle-chevron {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--red-deep);
+  background: rgba(216,31,68,0.08);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.route-sheet-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: min(520px, calc(100dvh - 164px));
+  overflow: auto;
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.route-panel-image {
+  position: relative;
+  height: 148px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 6px;
+  background:
+    linear-gradient(135deg, rgba(216,31,68,0.16), rgba(15,13,12,0.08)),
+    #efe9e2;
+}
+
+.route-panel-image img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.route-progress {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.08);
+}
+
+.route-progress-bar {
+  height: 100%;
+  min-width: 6px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--red), var(--green));
+  transition: width 0.35s ease;
+}
+
+.route-stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.route-stat-grid div {
+  min-width: 0;
+  padding: 10px;
+  border-radius: 7px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.route-stat-grid span,
+.route-node-list span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.route-stat-grid strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1.1;
+}
+
+.route-direction {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  color: var(--blue);
+  background: rgba(30,79,163,0.08);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.route-direction small {
+  color: rgba(30,79,163,0.72);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-align: right;
+}
+
+.route-details-toggle {
+  min-height: 36px;
+  border-radius: 7px;
+  border: 1px solid var(--border-md);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 800;
+  transition: background 0.14s;
+}
+
+.route-details-toggle:hover {
+  background: rgba(0,0,0,0.05);
+}
+
+.route-node-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.route-node-list div {
+  min-width: 0;
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
+
+.route-node-list strong,
+.route-node-list small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.route-node-list strong {
+  color: var(--text);
+  font-size: 0.86rem;
+  line-height: 1.2;
+}
+
+.route-node-list small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+@keyframes gpsFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes gpsScaleIn {
+  from { opacity: 0; transform: scale(0.985) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes gpsPinPulse {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+
+@keyframes gpsPulseRate {
+  0%, 100% { transform: scale(1); opacity: 0.62; }
+  50% { transform: scale(1.35); opacity: 1; }
+}
+
+@keyframes gpsPingRate {
+  0% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(2.2); opacity: 0; }
+}
+
+@media (max-width: 720px) {
+  .driver-location-btn {
+    width: 34px;
+    height: 34px;
+  }
+
+  .gps-modal-overlay {
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .gps-modal-content {
+    width: 100vw;
+    height: 100dvh;
+    border: none;
+    border-radius: 0;
+  }
+
+  .gps-modal-header {
+    min-height: 54px;
+    padding: 8px 10px 8px 12px;
+  }
+
+  .gps-modal-title-details h3 {
+    font-size: 0.95rem;
+  }
+
+  .gps-modal-title-details span {
+    max-width: 42vw;
+    font-size: 0.68rem;
+  }
+
+  .gps-status-badge {
+    max-width: 124px;
+    padding: 5px 8px;
+    font-size: 0.62rem;
+  }
+
+  .gps-modal-close {
+    width: 32px;
+    height: 32px;
+  }
+
+  .gps-route-sheet {
+    right: 8px;
+    bottom: 8px;
+    width: calc(100% - 16px);
+  }
+
+  .route-sheet-summary {
+    min-height: 60px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 9px 10px;
+  }
+
+  .route-summary-stat {
+    display: none;
+  }
+
+  .route-panel-toggle-chevron {
+    width: 22px;
+    height: 22px;
+  }
+
+  .route-sheet-detail {
+    max-height: min(54dvh, 440px);
+    gap: 10px;
+    padding: 0 10px 10px;
+  }
+
+  .route-panel-image {
+    height: 112px;
+    margin-top: 10px;
+  }
+
+  .route-node-list {
+    grid-template-columns: 1fr;
+  }
+
+  .route-node-list small,
+  .route-direction small {
+    display: none;
+  }
+}
