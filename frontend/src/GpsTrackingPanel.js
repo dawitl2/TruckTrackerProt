@@ -34,11 +34,6 @@ const ROUTE_WAYPOINTS = [
   { name: "Doraleh Port", country: "Djibouti", latitude: 11.59, longitude: 43.08 }
 ];
 
-const ROUTE_IMAGE_FALLBACKS = [
-  "https://images.unsplash.com/photo-1503376780353-7e6692767b70?auto=format&fit=crop&w=960&q=80",
-  "https://images.unsplash.com/photo-1519003722824-194d4455a60c?auto=format&fit=crop&w=960&q=80"
-];
-
 export function getMapPlateFormat(plate) {
   const norm = normalizePlate(plate);
   if (norm.includes("A06725")) return "3-A06725/3-32431";
@@ -161,18 +156,43 @@ function getImageFallbackDataUri(label) {
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
 
-function getPlaceImageUrls(placeName) {
+function getStaticMapImageUrl(point) {
+  const latitude = asCoordinate(point?.latitude);
+  const longitude = asCoordinate(point?.longitude);
+  if (!isValidCoordinate(latitude, longitude)) return "";
+
+  const marker = `${latitude.toFixed(5)},${longitude.toFixed(5)},red-pushpin`;
+  const params = new URLSearchParams({
+    center: `${latitude.toFixed(5)},${longitude.toFixed(5)}`,
+    zoom: "11",
+    size: "960x540",
+    markers: marker
+  });
+
+  return `https://staticmap.openstreetmap.de/staticmap.php?${params.toString()}`;
+}
+
+function getPlaceImageUrls(placeName, point) {
   const cleanedPlace = cleanCell(placeName)
     .replace(/\b(NA|N\/A|Live Tracking|Vehicle)\b/gi, "")
     .slice(0, 120)
     .trim();
-  const query = encodeURIComponent(`${cleanedPlace || "Ethiopia Djibouti highway"} road transport`);
+  const staticMapUrl = getStaticMapImageUrl(point);
 
   return [
-    `https://source.unsplash.com/960x540/?${query}`,
-    ...ROUTE_IMAGE_FALLBACKS,
+    staticMapUrl,
     getImageFallbackDataUri(cleanedPlace || "Ethiopia Djibouti route")
-  ];
+  ].filter(Boolean);
+}
+
+function getWikipediaSearchName(placeName) {
+  return cleanCell(placeName)
+    .replace(/^Near\s+/i, "")
+    .replace(/\([^)]*\)/g, "")
+    .replace(/\b(?:district|zone|region|woreda)\b/gi, "")
+    .split(/[;,|]/)[0]
+    .slice(0, 90)
+    .trim();
 }
 
 function getGpsPlaceLabel(rawLabel, nearestPlace) {
@@ -457,7 +477,7 @@ function buildRouteInsight(location, previousLocation) {
     progress: 0,
     placeLabel: "Waiting for GPS fix",
     placeDetail: "Coordinates pending",
-    imageUrls: getPlaceImageUrls("Ethiopia Djibouti highway")
+    imageUrls: getPlaceImageUrls("Bole Addis Ababa", ROUTE_NODES.start)
   };
 
   const latitude = asCoordinate(location?.latitude);
@@ -494,25 +514,60 @@ function buildRouteInsight(location, previousLocation) {
     progress: completedPercent,
     placeLabel,
     placeDetail: formatCoordinatePair(latitude, longitude),
-    imageUrls: getPlaceImageUrls(placeLabel)
+    imageUrls: getPlaceImageUrls(placeLabel, point)
   };
 }
 
 function RouteImage({ imageUrls, alt }) {
   const [imageIndex, setImageIndex] = useState(0);
-  const imageKey = imageUrls.join("|");
+  const [placeThumbnail, setPlaceThumbnail] = useState("");
+  const searchName = getWikipediaSearchName(alt);
+  const imageSources = [placeThumbnail, ...imageUrls].filter(Boolean);
+  const imageKey = `${searchName}|${imageSources.join("|")}`;
 
   useEffect(() => {
     setImageIndex(0);
-  }, [imageKey]);
+  }, [imageKey, placeThumbnail]);
+
+  useEffect(() => {
+    let ignore = false;
+    setPlaceThumbnail("");
+    if (!searchName) return () => { ignore = true; };
+
+    const params = new URLSearchParams({
+      action: "query",
+      generator: "search",
+      gsrsearch: `${searchName} Ethiopia Djibouti`,
+      gsrlimit: "1",
+      prop: "pageimages",
+      piprop: "thumbnail",
+      pithumbsize: "960",
+      format: "json",
+      origin: "*"
+    });
+
+    fetch(`https://en.wikipedia.org/w/api.php?${params.toString()}`)
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => {
+        if (ignore) return;
+        const pages = data?.query?.pages ? Object.values(data.query.pages) : [];
+        const thumbnail = pages.find((page) => page?.thumbnail?.source)?.thumbnail?.source;
+        if (thumbnail) setPlaceThumbnail(thumbnail);
+      })
+      .catch(() => {});
+
+    return () => {
+      ignore = true;
+    };
+  }, [searchName]);
 
   return (
     <img
-      src={imageUrls[imageIndex] || getImageFallbackDataUri(alt)}
+      src={imageSources[imageIndex] || getImageFallbackDataUri(alt)}
       alt={alt}
       loading="lazy"
       referrerPolicy="no-referrer"
-      onError={() => setImageIndex((index) => Math.min(index + 1, imageUrls.length - 1))}
+      onError={() => setImageIndex((index) => Math.min(index + 1, imageSources.length - 1))}
     />
   );
 }
