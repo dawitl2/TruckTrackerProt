@@ -135,6 +135,19 @@ function getNearestRoutePlace(point) {
   }, null);
 }
 
+function getCountryLabel(point, nearestPlace) {
+  const longitude = asCoordinate(point?.longitude);
+  if (nearestPlace?.country === "Djibouti" || longitude >= 41.75) return "Djibouti";
+  return "Ethiopia";
+}
+
+function getGoogleMapsUrl(point) {
+  const latitude = asCoordinate(point?.latitude);
+  const longitude = asCoordinate(point?.longitude);
+  if (!isValidCoordinate(latitude, longitude)) return "";
+  return `https://www.google.com/maps/search/?api=1&query=${latitude.toFixed(6)},${longitude.toFixed(6)}`;
+}
+
 function getImageFallbackDataUri(label) {
   const safeLabel = cleanCell(label || "Route image").slice(0, 54);
   const svg = `
@@ -156,20 +169,22 @@ function getImageFallbackDataUri(label) {
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
 
-function getStaticMapImageUrl(point) {
+function getStaticMapImageUrls(point) {
   const latitude = asCoordinate(point?.latitude);
   const longitude = asCoordinate(point?.longitude);
-  if (!isValidCoordinate(latitude, longitude)) return "";
+  if (!isValidCoordinate(latitude, longitude)) return [];
 
   const marker = `${latitude.toFixed(5)},${longitude.toFixed(5)},red-pushpin`;
-  const params = new URLSearchParams({
-    center: `${latitude.toFixed(5)},${longitude.toFixed(5)}`,
-    zoom: "11",
-    size: "960x540",
-    markers: marker
-  });
+  return [8, 11, 14].map((zoom) => {
+    const params = new URLSearchParams({
+      center: `${latitude.toFixed(5)},${longitude.toFixed(5)}`,
+      zoom: String(zoom),
+      size: "960x540",
+      markers: marker
+    });
 
-  return `https://staticmap.openstreetmap.de/staticmap.php?${params.toString()}`;
+    return `https://staticmap.openstreetmap.de/staticmap.php?${params.toString()}`;
+  });
 }
 
 function getPlaceImageUrls(placeName, point) {
@@ -177,10 +192,9 @@ function getPlaceImageUrls(placeName, point) {
     .replace(/\b(NA|N\/A|Live Tracking|Vehicle)\b/gi, "")
     .slice(0, 120)
     .trim();
-  const staticMapUrl = getStaticMapImageUrl(point);
 
   return [
-    staticMapUrl,
+    ...getStaticMapImageUrls(point),
     getImageFallbackDataUri(cleanedPlace || "Ethiopia Djibouti route")
   ].filter(Boolean);
 }
@@ -208,6 +222,36 @@ function getGpsPlaceLabel(rawLabel, nearestPlace) {
 
   if (!candidate || /live tracking|vehicle|speed|ignition/i.test(candidate)) return fallback;
   return candidate.length > 92 ? `${candidate.slice(0, 89).trim()}...` : candidate;
+}
+
+function getLatestRowDate(row) {
+  const dateText = cleanCell(row?.arrival_date || "");
+  if (!dateText) return null;
+
+  const timeText = cleanCell(row?.batch_time || "00:00").slice(0, 5);
+  const date = new Date(`${dateText}T${timeText || "00:00"}:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getLatestRowAgeDays(row) {
+  const date = getLatestRowDate(row);
+  if (!date) return null;
+  return Math.max(0, (Date.now() - date.getTime()) / (24 * 60 * 60 * 1000));
+}
+
+function inferStationaryDirection(latestRow) {
+  const ageDays = getLatestRowAgeDays(latestRow);
+  if (ageDays === null) {
+    return {
+      isReturnTrip: false,
+      confidence: "Stationary estimate"
+    };
+  }
+
+  return {
+    isReturnTrip: ageDays <= 3,
+    confidence: "Stationary estimate"
+  };
 }
 
 function compactGpsText(value) {
@@ -464,14 +508,15 @@ function scrapeGpsDocument(doc, targetPlate) {
   return null;
 }
 
-function buildRouteInsight(location, previousLocation) {
+function buildRouteInsight(location, previousLocation, latestRow) {
   const totalKm = distanceKm(ROUTE_NODES.start, ROUTE_NODES.destination);
   const base = {
     hasLiveLocation: false,
     start: ROUTE_NODES.start,
     destination: ROUTE_NODES.destination,
-    directionLabel: "Route estimate",
-    directionConfidence: "",
+    directionSource: "Waiting for live GPS",
+    countryLabel: "GPS pending",
+    googleMapsUrl: "",
     distanceLeft: "-",
     timeLeft: "-",
     progress: 0,
@@ -491,24 +536,33 @@ function buildRouteInsight(location, previousLocation) {
 
   const prevLat = asCoordinate(previousLocation?.latitude);
   const prevLng = asCoordinate(previousLocation?.longitude);
+  let directionSource = "Truck arrow heading";
   if (heading === null && isValidCoordinate(prevLat, prevLng) && distanceKm({ latitude: prevLat, longitude: prevLng }, point) >= 0.05) {
     heading = bearingDegrees({ latitude: prevLat, longitude: prevLng }, point);
+    directionSource = "Recent GPS movement";
   }
 
-  const isReturnTrip = heading !== null && angleDelta(heading, reverseBearing) < angleDelta(heading, forwardBearing);
+  const stationaryInference = inferStationaryDirection(latestRow);
+  const isReturnTrip = heading !== null
+    ? angleDelta(heading, reverseBearing) < angleDelta(heading, forwardBearing)
+    : stationaryInference.isReturnTrip;
+  if (heading === null) directionSource = "Stationary row estimate";
+
   const routeStart = isReturnTrip ? ROUTE_NODES.destination : ROUTE_NODES.start;
   const routeDestination = isReturnTrip ? ROUTE_NODES.start : ROUTE_NODES.destination;
   const remainingKm = distanceKm(point, routeDestination);
   const completedPercent = Math.min(100, Math.max(0, (1 - remainingKm / totalKm) * 100));
   const nearestPlace = getNearestRoutePlace(point);
   const placeLabel = getGpsPlaceLabel(location?.label, nearestPlace);
+  const countryLabel = getCountryLabel(point, nearestPlace);
 
   return {
     hasLiveLocation: true,
     start: routeStart,
     destination: routeDestination,
-    directionLabel: heading === null ? "Outbound estimate to Doraleh" : (isReturnTrip ? "Return to Addis Ababa" : "Outbound to Doraleh"),
-    directionConfidence: heading === null ? "Heading pending" : `${Math.round(heading)} deg heading`,
+    directionSource,
+    countryLabel,
+    googleMapsUrl: getGoogleMapsUrl(point),
     distanceLeft: formatDistance(remainingKm),
     timeLeft: formatDurationFromHours(remainingKm / ROUTE_SPEED_KMH),
     progress: completedPercent,
@@ -518,73 +572,149 @@ function buildRouteInsight(location, previousLocation) {
   };
 }
 
-function RouteImage({ imageUrls, alt }) {
-  const [imageIndex, setImageIndex] = useState(0);
-  const [placeThumbnail, setPlaceThumbnail] = useState("");
+function uniqueImageUrls(urls) {
+  return Array.from(new Set(urls.filter(Boolean)));
+}
+
+function RouteGallery({ imageUrls, alt }) {
+  const [inlineIndex, setInlineIndex] = useState(0);
+  const [remoteImages, setRemoteImages] = useState([]);
+  const [lightboxIndex, setLightboxIndex] = useState(null);
   const searchName = getWikipediaSearchName(alt);
-  const imageSources = [placeThumbnail, ...imageUrls].filter(Boolean);
+  const imageSources = uniqueImageUrls([...remoteImages, ...imageUrls]).slice(0, 6);
   const imageKey = `${searchName}|${imageSources.join("|")}`;
 
   useEffect(() => {
-    setImageIndex(0);
-  }, [imageKey, placeThumbnail]);
+    setInlineIndex(0);
+  }, [imageKey]);
 
   useEffect(() => {
     let ignore = false;
-    setPlaceThumbnail("");
+    setRemoteImages([]);
     if (!searchName) return () => { ignore = true; };
 
-    const params = new URLSearchParams({
-      action: "query",
-      generator: "search",
-      gsrsearch: `${searchName} Ethiopia Djibouti`,
-      gsrlimit: "1",
-      prop: "pageimages",
-      piprop: "thumbnail",
-      pithumbsize: "960",
-      format: "json",
-      origin: "*"
-    });
+    async function fetchImages() {
+      const wikiParams = new URLSearchParams({
+        action: "query",
+        generator: "search",
+        gsrsearch: `${searchName} Ethiopia Djibouti`,
+        gsrlimit: "8",
+        prop: "pageimages",
+        piprop: "thumbnail",
+        pithumbsize: "960",
+        format: "json",
+        origin: "*"
+      });
+      const commonsParams = new URLSearchParams({
+        action: "query",
+        generator: "search",
+        gsrnamespace: "6",
+        gsrsearch: `${searchName} Ethiopia OR Djibouti`,
+        gsrlimit: "8",
+        prop: "imageinfo",
+        iiprop: "url",
+        iiurlwidth: "960",
+        format: "json",
+        origin: "*"
+      });
 
-    fetch(`https://en.wikipedia.org/w/api.php?${params.toString()}`)
-      .then((response) => response.ok ? response.json() : null)
-      .then((data) => {
-        if (ignore) return;
-        const pages = data?.query?.pages ? Object.values(data.query.pages) : [];
-        const thumbnail = pages.find((page) => page?.thumbnail?.source)?.thumbnail?.source;
-        if (thumbnail) setPlaceThumbnail(thumbnail);
-      })
-      .catch(() => {});
+      const results = await Promise.allSettled([
+        fetch(`https://en.wikipedia.org/w/api.php?${wikiParams.toString()}`).then((response) => response.ok ? response.json() : null),
+        fetch(`https://commons.wikimedia.org/w/api.php?${commonsParams.toString()}`).then((response) => response.ok ? response.json() : null)
+      ]);
+      if (ignore) return;
+
+      const nextImages = [];
+      const wikiPages = results[0].status === "fulfilled" && results[0].value?.query?.pages
+        ? Object.values(results[0].value.query.pages)
+        : [];
+      wikiPages.forEach((page) => {
+        if (page?.thumbnail?.source) nextImages.push(page.thumbnail.source);
+      });
+
+      const commonsPages = results[1].status === "fulfilled" && results[1].value?.query?.pages
+        ? Object.values(results[1].value.query.pages)
+        : [];
+      commonsPages.forEach((page) => {
+        const imageInfo = page?.imageinfo?.[0];
+        if (imageInfo?.thumburl) nextImages.push(imageInfo.thumburl);
+        else if (imageInfo?.url) nextImages.push(imageInfo.url);
+      });
+
+      setRemoteImages(uniqueImageUrls(nextImages).slice(0, 4));
+    }
+
+    fetchImages().catch(() => {});
 
     return () => {
       ignore = true;
     };
   }, [searchName]);
 
+  const openLightbox = (index) => setLightboxIndex(index);
+  const closeLightbox = () => setLightboxIndex(null);
+  const moveLightbox = (step) => {
+    setLightboxIndex((index) => {
+      if (index === null || !imageSources.length) return index;
+      return (index + step + imageSources.length) % imageSources.length;
+    });
+  };
+  const inlineSrc = imageSources[inlineIndex] || getImageFallbackDataUri(alt);
+  const lightboxSrc = lightboxIndex === null ? "" : imageSources[lightboxIndex];
+
   return (
-    <img
-      src={imageSources[imageIndex] || getImageFallbackDataUri(alt)}
-      alt={alt}
-      loading="lazy"
-      referrerPolicy="no-referrer"
-      onError={() => setImageIndex((index) => Math.min(index + 1, imageSources.length - 1))}
-    />
+    <>
+      <button type="button" className="route-gallery-main" onClick={() => openLightbox(inlineIndex)} aria-label={`Open images for ${alt}`}>
+        <img
+          src={inlineSrc}
+          alt={alt}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setInlineIndex((index) => Math.min(index + 1, imageSources.length - 1))}
+        />
+      </button>
+
+      <div className="route-gallery-dots" aria-label="Nearby image pages">
+        {imageSources.slice(0, 6).map((src, index) => (
+          <button
+            type="button"
+            key={src}
+            className={index === inlineIndex ? "active" : ""}
+            onClick={() => setInlineIndex(index)}
+            aria-label={`Show nearby image ${index + 1}`}
+          />
+        ))}
+      </div>
+
+      {lightboxIndex !== null ? (
+        <div className="route-gallery-lightbox" onClick={closeLightbox} role="dialog" aria-modal="true" aria-label={`Images for ${alt}`}>
+          <div className="route-gallery-lightbox-inner" onClick={(event) => event.stopPropagation()}>
+            <button type="button" className="route-gallery-close" onClick={closeLightbox} aria-label="Close image viewer">x</button>
+            <button type="button" className="route-gallery-nav previous" onClick={() => moveLightbox(-1)} aria-label="Previous image">&lt;</button>
+            <img src={lightboxSrc} alt={alt} referrerPolicy="no-referrer" />
+            <button type="button" className="route-gallery-nav next" onClick={() => moveLightbox(1)} aria-label="Next image">&gt;</button>
+            <div className="route-gallery-count">
+              {lightboxIndex + 1} / {imageSources.length}
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
-export default function GpsTrackingPanel({ isOpen, onClose, selectedPlate, plateLabel, driver }) {
+export default function GpsTrackingPanel({ isOpen, onClose, selectedPlate, plateLabel, driver, latestRow }) {
   const [gpsStatus, setGpsStatus] = useState("Initializing...");
   const [gpsFrameError, setGpsFrameError] = useState("");
   const [gpsReloadKey, setGpsReloadKey] = useState(0);
   const [gpsLocation, setGpsLocation] = useState(null);
   const [isRoutePanelExpanded, setIsRoutePanelExpanded] = useState(false);
-  const [showRouteDetails, setShowRouteDetails] = useState(false);
   const previousGpsLocationRef = useRef(null);
 
   const gpsPlate = getMapPlateFormat(selectedPlate);
   const gpsFrameUrl = getGpsTrackingUrl(gpsPlate);
   const gpsStatusClass = getStatusClass(gpsStatus);
-  const routeInsight = buildRouteInsight(gpsLocation, previousGpsLocationRef.current);
+  const routeInsight = buildRouteInsight(gpsLocation, previousGpsLocationRef.current, latestRow);
   const driverName = driver?.name || "Driver";
 
   useEffect(() => {
@@ -598,7 +728,6 @@ export default function GpsTrackingPanel({ isOpen, onClose, selectedPlate, plate
     setGpsLocation(null);
     previousGpsLocationRef.current = null;
     setIsRoutePanelExpanded(false);
-    setShowRouteDetails(false);
   }, [gpsFrameUrl, isOpen]);
 
   const retryGpsPanel = () => {
@@ -780,6 +909,7 @@ export default function GpsTrackingPanel({ isOpen, onClose, selectedPlate, plate
                 <strong>{routeInsight.placeLabel}</strong>
                 <small>{routeInsight.placeDetail}</small>
               </span>
+              <span className="route-country-chip">{routeInsight.countryLabel}</span>
               <span className="route-summary-stat">
                 <strong>{routeInsight.distanceLeft}</strong>
                 <small>{routeInsight.timeLeft}</small>
@@ -792,7 +922,7 @@ export default function GpsTrackingPanel({ isOpen, onClose, selectedPlate, plate
             {isRoutePanelExpanded ? (
               <div className="route-sheet-detail">
                 <div className="route-panel-image">
-                  <RouteImage imageUrls={routeInsight.imageUrls} alt={routeInsight.placeLabel} />
+                  <RouteGallery imageUrls={routeInsight.imageUrls} alt={routeInsight.placeLabel} />
                 </div>
 
                 <div className="route-progress">
@@ -813,39 +943,31 @@ export default function GpsTrackingPanel({ isOpen, onClose, selectedPlate, plate
                   </div>
                 </div>
 
-                <div className="route-direction">
-                  <span>{routeInsight.directionLabel}</span>
-                  {routeInsight.directionConfidence ? (
-                    <small>{routeInsight.directionConfidence}</small>
-                  ) : null}
+                <div className="route-endpoint-strip">
+                  <div>
+                    <span>Start</span>
+                    <strong>{routeInsight.start.shortName}</strong>
+                    <small>{routeInsight.start.location}</small>
+                  </div>
+                  <div>
+                    <span>Destination</span>
+                    <strong>{routeInsight.destination.shortName}</strong>
+                    <small>{routeInsight.destination.location}</small>
+                  </div>
                 </div>
 
-                <button
-                  type="button"
-                  className="route-details-toggle"
-                  onClick={() => setShowRouteDetails((value) => !value)}
-                  aria-expanded={showRouteDetails}
+                <a
+                  className={`route-map-link${routeInsight.googleMapsUrl ? "" : " disabled"}`}
+                  href={routeInsight.googleMapsUrl || undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-disabled={!routeInsight.googleMapsUrl}
+                  onClick={(event) => {
+                    if (!routeInsight.googleMapsUrl) event.preventDefault();
+                  }}
                 >
-                  {showRouteDetails ? "Hide route nodes" : "Show route nodes"}
-                </button>
-
-                {showRouteDetails ? (
-                  <div className="route-node-list">
-                    <div>
-                      <span>Start</span>
-                      <strong>{routeInsight.start.shortName}</strong>
-                      <small>{routeInsight.start.location}</small>
-                      <small>{formatCoordinatePair(routeInsight.start.latitude, routeInsight.start.longitude)}</small>
-                    </div>
-
-                    <div>
-                      <span>Destination</span>
-                      <strong>{routeInsight.destination.shortName}</strong>
-                      <small>{routeInsight.destination.location}</small>
-                      <small>{formatCoordinatePair(routeInsight.destination.latitude, routeInsight.destination.longitude)}</small>
-                    </div>
-                  </div>
-                ) : null}
+                  Open in Google Maps
+                </a>
               </div>
             ) : null}
           </aside>
