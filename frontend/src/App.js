@@ -16,6 +16,8 @@ const DRIVERS = [
   { id: 2, name: "Dawit", photo: "/driver2.png" },
 ];
 
+const EMPTY_MANUAL_FIELDS = { license_plate: "", arrival_code: "", arrival_date: "", batch_time: "", product_type: "", company: "", paid: false };
+
 function supabaseHeaders(extra = {}) {
   return { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, ...extra };
 }
@@ -30,6 +32,12 @@ async function readJsonResponse(response) {
 
 function normalizeValue(value) {
   return value === null || value === undefined || value === "" ? "-" : String(value);
+}
+
+function getProductTone(productType) {
+  const text = cleanCell(productType);
+  if (!text) return "empty";
+  return text.toUpperCase() === "AGO" ? "ago" : "other";
 }
 
 function toDbValue(value) {
@@ -359,9 +367,11 @@ function App() {
   const highlightTimerRef = useRef(null);
 
   const [plusMode, setPlusMode] = useState(null);
-  const [manualFields, setManualFields] = useState({ license_plate: "", arrival_code: "", arrival_date: "", batch_time: "", product_type: "", company: "", paid: false });
+  const [manualFields, setManualFields] = useState({ ...EMPTY_MANUAL_FIELDS, license_plate: TARGET_LICENSE_PLATES[0] });
   const [manualSaving, setManualSaving] = useState(false);
   const [manualError, setManualError] = useState("");
+  const [manualPlateMenuOpen, setManualPlateMenuOpen] = useState(false);
+  const [driverPreview, setDriverPreview] = useState(null);
 
   const [contextMenu, setContextMenu] = useState(null);
   const longPressTimer = useRef(null);
@@ -405,6 +415,18 @@ function App() {
 
   const closeGpsModal = () => {
     setIsGpsModalOpen(false);
+  };
+
+  const openManualEntry = () => {
+    setManualError("");
+    setManualPlateMenuOpen(false);
+    setManualFields((fields) => ({
+      ...fields,
+      license_plate: TARGET_LICENSE_PLATES.includes(normalizePlate(fields.license_plate))
+        ? normalizePlate(fields.license_plate)
+        : normalizePlate(selectedPlate) || TARGET_LICENSE_PLATES[0]
+    }));
+    setPlusMode("manual");
   };
 
   const clearError = () => setError("");
@@ -660,7 +682,8 @@ function App() {
       const data = await readJsonResponse(response);
       if (!response.ok) throw new Error(data.error?.message || data.message || "Save failed");
       setPlusMode(null);
-      setManualFields({ license_plate: "", arrival_code: "", arrival_date: "", batch_time: "", product_type: "", company: "", paid: false });
+      setManualPlateMenuOpen(false);
+      setManualFields({ ...EMPTY_MANUAL_FIELDS, license_plate: normalizePlate(manualFields.license_plate) || TARGET_LICENSE_PLATES[0] });
       await loadAll();
     } catch (err) { setManualError(err.message); }
     finally { setManualSaving(false); }
@@ -937,7 +960,7 @@ function App() {
                   <span className="choice-icon">📂</span>
                   <span className="choice-label">Import from file<small>Pick an Excel file to scan</small></span>
                 </button>
-                <button type="button" className="choice-btn manual" onClick={() => setPlusMode("manual")}>
+                <button type="button" className="choice-btn manual" onClick={openManualEntry}>
                   <span className="choice-icon">✏️</span>
                   <span className="choice-label">Enter manually<small>Type the row details yourself</small></span>
                 </button>
@@ -958,8 +981,45 @@ function App() {
                 <div className={`edit-error${manualError.startsWith("Already") ? " warning" : ""}`}>{manualError}</div>
               ) : null}
               <div className="edit-fields">
+                <div className="edit-field">
+                  <label id="manual-license_plate-label">License Plate *</label>
+                  <div className="plate-select" onBlur={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget)) setManualPlateMenuOpen(false);
+                  }}>
+                    <button
+                      type="button"
+                      className={`plate-select-trigger${manualPlateMenuOpen ? " open" : ""}`}
+                      aria-haspopup="listbox"
+                      aria-expanded={manualPlateMenuOpen}
+                      aria-labelledby="manual-license_plate-label"
+                      onClick={() => setManualPlateMenuOpen((open) => !open)}
+                    >
+                      <span>{manualFields.license_plate || TARGET_LICENSE_PLATES[0]}</span>
+                      <b>v</b>
+                    </button>
+                    {manualPlateMenuOpen ? (
+                      <div className="plate-select-menu" role="listbox" aria-labelledby="manual-license_plate-label">
+                        {TARGET_LICENSE_PLATES.map((plate) => (
+                          <button
+                            key={plate}
+                            type="button"
+                            role="option"
+                            aria-selected={normalizePlate(manualFields.license_plate) === normalizePlate(plate)}
+                            className={normalizePlate(manualFields.license_plate) === normalizePlate(plate) ? "active" : ""}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => {
+                              setManualFields((p) => ({ ...p, license_plate: plate }));
+                              setManualPlateMenuOpen(false);
+                            }}
+                          >
+                            {plate}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
                 {[
-                  { key: "license_plate", label: "License Plate *" },
                   { key: "arrival_code", label: "Arrival Code *" },
                   { key: "arrival_date", label: "Date", placeholder: "YYYY-MM-DD" },
                   { key: "batch_time", label: "Time", placeholder: "HH:MM" },
@@ -1215,13 +1275,13 @@ function App() {
 
           {/* ── Driver card ── */}
           <div className="driver-card">
-            <div className="driver-photo-wrap">
+            <button type="button" className="driver-photo-wrap" onClick={() => setDriverPreview(currentDriver)} aria-label={`Open ${currentDriver.name} photo`}>
               <img src={currentDriver.photo} alt={`Driver ${currentDriver.id}`} className="driver-photo"
                 onError={(e) => { e.currentTarget.style.display = "none"; e.currentTarget.nextSibling.style.display = "flex"; }} />
               <div className="driver-photo-fallback" style={{ display: "none" }}>
                 <span>{currentDriver.name.charAt(0)}</span>
               </div>
-            </div>
+            </button>
             <div className="driver-info">
               <p className="driver-label">Driver</p>
               <p className="driver-name">{currentDriver.name}</p>
@@ -1246,6 +1306,7 @@ function App() {
             <table>
               <thead>
                 <tr>
+                  <th className="th-product-status" aria-label="Product type status"></th>
                   <th className="th-num">#</th>
                   <th className="th-paid">Paid</th>
                   <th>Code</th>
@@ -1268,7 +1329,7 @@ function App() {
                         onTouchStart={(e) => { handleDividerLongPressStart(e, item); handleDividerTouchStart(e, item); }}
                         onTouchMove={(e) => { handleDividerLongPressEnd(); handleDividerTouchMove(e); }}
                         onTouchEnd={(e) => { handleDividerLongPressEnd(); handleDividerTouchEnd(e, mergedRows); }}>
-                        <td colSpan="7" className="divider-cell">
+                        <td colSpan="8" className="divider-cell">
                           <div className="divider-inner">
                             <span className="divider-drag-handle" title="Drag to reorder">⠿</span>
                             <span className="divider-label">{item.label}</span>
@@ -1282,15 +1343,19 @@ function App() {
                   }
                   const idx = rowIndex++;
                   const isDropTarget = dragOverIndex === mergedIdx && draggingDividerId !== null;
+                  const productTone = getProductTone(item.product_type);
                   return (
                     <tr key={item.id} data-row-index={mergedIdx}
-                      className={[isHighlighted(item.id) ? "row-highlight" : "", item.paid ? "row-paid" : "", isDropTarget ? "drop-target" : ""].filter(Boolean).join(" ")}
+                      className={[isHighlighted(item.id) ? "row-highlight" : "", item.paid ? "row-paid" : "", `product-${productTone}`, isDropTarget ? "drop-target" : ""].filter(Boolean).join(" ")}
                       onContextMenu={(e) => openContextMenu(e, item)}
                       onTouchStart={(e) => handleRowTouchStart(e, item)}
                       onTouchEnd={handleRowTouchEnd}
                       onTouchMove={handleRowTouchEnd}
                       onDragOver={(e) => handleDividerDragOver(e, mergedIdx)}
                       onDrop={(e) => handleDividerDrop(e, item)}>
+                      <td className="td-product-status">
+                        <span title={productTone === "ago" ? "AGO product" : "Non-AGO product"} />
+                      </td>
                       <td className="td-num">{idx + 1}</td>
                       <td className="td-paid">
                         <span className={`paid-badge ${item.paid ? "paid" : "unpaid"}`}>{item.paid ? "✓" : "—"}</span>
@@ -1303,7 +1368,7 @@ function App() {
                     </tr>
                   );
                 }) : (
-                  <tr><td colSpan="7" className="empty-cell">No saved rows for {formatPlateLabel(selectedPlate)}.</td></tr>
+                  <tr><td colSpan="8" className="empty-cell">No saved rows for {formatPlateLabel(selectedPlate)}.</td></tr>
                 )}
               </tbody>
             </table>
@@ -1374,6 +1439,21 @@ function App() {
               </button>
             ) : null}
             <button type="button" className="sheet-action" onClick={resetScanState}>Dismiss</button>
+          </div>
+        </div>
+      ) : null}
+
+      {driverPreview ? (
+        <div className="driver-preview-backdrop" onClick={() => setDriverPreview(null)} role="presentation">
+          <div className="driver-preview-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`${driverPreview.name} details`}>
+            <button type="button" className="driver-preview-close" onClick={() => setDriverPreview(null)} aria-label="Close driver photo">x</button>
+            <img src={driverPreview.photo} alt={`Driver ${driverPreview.id}`} />
+            <div className="driver-preview-info">
+              <span>Driver {driverPreview.id}</span>
+              <strong>{driverPreview.name}</strong>
+              <small>Location: Ethiopia</small>
+              <small>Company: Total</small>
+            </div>
           </div>
         </div>
       ) : null}

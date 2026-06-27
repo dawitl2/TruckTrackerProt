@@ -13,17 +13,10 @@
   justify-content: center;
   gap: 8px;
   border: 1px solid rgba(216,31,68,0.22);
-  box-shadow: 0 3px 10px rgba(216,31,68,0.08);
   cursor: pointer;
-  transition: transform 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+
   font-size: 0.8rem;
   font-weight: 900;
-}
-
-.driver-location-btn:hover {
-  background: rgba(216,31,68,0.14);
-  transform: translateY(-1px);
-  box-shadow: 0 5px 15px rgba(216,31,68,0.16);
 }
 
 .driver-location-btn:active {
@@ -378,6 +371,22 @@
   font-size: 0.68rem;
   line-height: 1.15;
 }
+
+.route-summary-progress {
+  display: none;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.08);
+}
+
+.route-summary-progress span {
+  display: block;
+  height: 100%;
+  min-width: 6px;
+  border-radius: inherit;
+  background: var(--red);
+}
 .route-panel-toggle-chevron {
   width: 24px;
   height: 24px;
@@ -543,6 +552,7 @@
 }
 
 .route-progress {
+  position: relative;
   height: 8px;
   overflow: hidden;
   border-radius: 999px;
@@ -550,11 +560,26 @@
 }
 
 .route-progress-bar {
+  position: relative;
   height: 100%;
   min-width: 6px;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--red), var(--green));
+  background: var(--red);
   transition: width 0.35s ease;
+}
+
+.route-progress-bar::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--red);
+  border: 2px solid #fff;
+  box-shadow: 0 3px 10px rgba(216,31,68,0.32);
+  transform: translate(50%, -50%);
 }
 
 .route-stat-grid {
@@ -597,6 +622,17 @@
   grid-template-columns: 1fr 1fr;
 }
 
+.route-next-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 7px;
+  border: 1px solid rgba(22,163,74,0.18);
+  background: rgba(22,163,74,0.08);
+}
+
 .route-endpoint-strip div {
   min-width: 0;
   padding: 9px 10px;
@@ -605,7 +641,16 @@
   background: var(--surface-2);
 }
 
-.route-endpoint-strip span {
+.route-next-strip div {
+  min-width: 0;
+}
+
+.route-next-strip div:last-child {
+  text-align: right;
+}
+
+.route-endpoint-strip span,
+.route-next-strip span {
   display: block;
   color: var(--muted);
   font-size: 0.65rem;
@@ -615,20 +660,24 @@
 }
 
 .route-endpoint-strip strong,
-.route-endpoint-strip small {
+.route-endpoint-strip small,
+.route-next-strip strong,
+.route-next-strip small {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.route-endpoint-strip strong {
+.route-endpoint-strip strong,
+.route-next-strip strong {
   margin-top: 2px;
   color: var(--text);
   font-size: 0.86rem;
   line-height: 1.15;
 }
 
-.route-endpoint-strip small {
+.route-endpoint-strip small,
+.route-next-strip small {
   margin-top: 2px;
   color: var(--muted);
   font-size: 0.72rem;
@@ -636,6 +685,7 @@
 }
 
 .route-map-link {
+  border: none;
   min-height: 38px;
   display: flex;
   align-items: center;
@@ -648,6 +698,7 @@
   font-weight: 900;
   text-decoration: none;
   transition: background 0.16s ease, transform 0.16s ease;
+  cursor: pointer;
 }
 
 .route-map-link:hover {
@@ -753,6 +804,12 @@
     display: none;
   }
 
+  .route-summary-progress {
+    display: block;
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
   .route-panel-toggle-chevron {
     width: 22px;
     height: 22px;
@@ -775,6 +832,11 @@
   .route-endpoint-strip {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 6px;
+  }
+
+  .route-next-strip {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
   }
 
   .route-endpoint-strip small {
