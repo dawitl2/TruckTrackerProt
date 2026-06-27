@@ -378,23 +378,6 @@
   font-size: 0.68rem;
   line-height: 1.15;
 }
-
-.route-country-chip,
-.route-location-chip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 26px;
-  padding: 0 9px;
-  border-radius: 999px;
-  color: var(--green-deep);
-  background: rgba(22,163,74,0.12);
-  border: 1px solid rgba(22,163,74,0.2);
-  font-size: 0.68rem;
-  font-weight: 900;
-  white-space: nowrap;
-}
-
 .route-panel-toggle-chevron {
   width: 24px;
   height: 24px;

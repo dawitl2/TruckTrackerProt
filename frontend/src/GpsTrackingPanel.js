@@ -126,19 +126,62 @@ function formatCoordinatePair(latitude, longitude) {
   return `${Math.abs(latitude).toFixed(4)} ${latSuffix}, ${Math.abs(longitude).toFixed(4)} ${lngSuffix}`;
 }
 
-function getNearestRoutePlace(point) {
-  if (!point) return ROUTE_WAYPOINTS[0];
-  return ROUTE_WAYPOINTS.reduce((nearest, place) => {
-    const placeDistance = distanceKm(point, place);
-    if (!nearest || placeDistance < nearest.distanceKm) return { ...place, distanceKm: placeDistance };
-    return nearest;
-  }, null);
+// --- Route-corridor projection: this is the single source of truth for
+// "where on the route is this point" and "which country is that". It
+// replaces the old combo of nearest-of-9-points + hardcoded longitude
+// cutoff, which is what caused the Ethiopia/Djibouti flip-flopping. ---
+
+function projectPointOnSegment(point, segmentStart, segmentEnd) {
+  const latRef = toRad((segmentStart.latitude + segmentEnd.latitude) / 2);
+  const lonScale = Math.cos(latRef) || 1;
+
+  const ax = segmentStart.longitude * lonScale;
+  const ay = segmentStart.latitude;
+  const bx = segmentEnd.longitude * lonScale;
+  const by = segmentEnd.latitude;
+  const px = point.longitude * lonScale;
+  const py = point.latitude;
+
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSquared = dx * dx + dy * dy;
+  const rawT = lengthSquared > 0 ? ((px - ax) * dx + (py - ay) * dy) / lengthSquared : 0;
+  const t = Math.min(1, Math.max(0, rawT));
+
+  const projection = {
+    latitude: segmentStart.latitude + t * (segmentEnd.latitude - segmentStart.latitude),
+    longitude: segmentStart.longitude + t * (segmentEnd.longitude - segmentStart.longitude)
+  };
+
+  return { t, distanceKm: distanceKm(point, projection) };
 }
 
-function getCountryLabel(point, nearestPlace) {
-  const longitude = asCoordinate(point?.longitude);
-  if (nearestPlace?.country === "Djibouti" || longitude >= 41.75) return "Djibouti";
-  return "Ethiopia";
+function resolveCorridorLocation(point) {
+  let best = null;
+
+  for (let index = 0; index < ROUTE_WAYPOINTS.length - 1; index += 1) {
+    const segmentStart = ROUTE_WAYPOINTS[index];
+    const segmentEnd = ROUTE_WAYPOINTS[index + 1];
+    const projection = projectPointOnSegment(point, segmentStart, segmentEnd);
+
+    if (!best || projection.distanceKm < best.distanceKm) {
+      best = { ...projection, segmentStart, segmentEnd };
+    }
+  }
+
+  if (!best) {
+    return { country: ROUTE_WAYPOINTS[0].country, nearestPlace: ROUTE_WAYPOINTS[0] };
+  }
+
+  const sameCountry = best.segmentStart.country === best.segmentEnd.country;
+  const country = sameCountry
+    ? best.segmentStart.country
+    : best.t < 0.5
+      ? best.segmentStart.country
+      : best.segmentEnd.country;
+  const nearestPlace = best.t < 0.5 ? best.segmentStart : best.segmentEnd;
+
+  return { country, nearestPlace };
 }
 
 function getGoogleMapsUrl(point) {
@@ -197,16 +240,6 @@ function getPlaceImageUrls(placeName, point) {
     ...getStaticMapImageUrls(point),
     getImageFallbackDataUri(cleanedPlace || "Ethiopia Djibouti route")
   ].filter(Boolean);
-}
-
-function getWikipediaSearchName(placeName) {
-  return cleanCell(placeName)
-    .replace(/^Near\s+/i, "")
-    .replace(/\([^)]*\)/g, "")
-    .replace(/\b(?:district|zone|region|woreda)\b/gi, "")
-    .split(/[;,|]/)[0]
-    .slice(0, 90)
-    .trim();
 }
 
 function getGpsPlaceLabel(rawLabel, nearestPlace) {
@@ -522,6 +555,9 @@ function buildRouteInsight(location, previousLocation, latestRow) {
     progress: 0,
     placeLabel: "Waiting for GPS fix",
     placeDetail: "Coordinates pending",
+    latitude: null,
+    longitude: null,
+    nearestPlaceName: ROUTE_WAYPOINTS[0].name,
     imageUrls: getPlaceImageUrls("Bole Addis Ababa", ROUTE_NODES.start)
   };
 
@@ -552,9 +588,9 @@ function buildRouteInsight(location, previousLocation, latestRow) {
   const routeDestination = isReturnTrip ? ROUTE_NODES.start : ROUTE_NODES.destination;
   const remainingKm = distanceKm(point, routeDestination);
   const completedPercent = Math.min(100, Math.max(0, (1 - remainingKm / totalKm) * 100));
-  const nearestPlace = getNearestRoutePlace(point);
+
+  const { country: countryLabel, nearestPlace } = resolveCorridorLocation(point);
   const placeLabel = getGpsPlaceLabel(location?.label, nearestPlace);
-  const countryLabel = getCountryLabel(point, nearestPlace);
 
   return {
     hasLiveLocation: true,
@@ -568,6 +604,9 @@ function buildRouteInsight(location, previousLocation, latestRow) {
     progress: completedPercent,
     placeLabel,
     placeDetail: formatCoordinatePair(latitude, longitude),
+    latitude,
+    longitude,
+    nearestPlaceName: nearestPlace.name,
     imageUrls: getPlaceImageUrls(placeLabel, point)
   };
 }
@@ -576,13 +615,131 @@ function uniqueImageUrls(urls) {
   return Array.from(new Set(urls.filter(Boolean)));
 }
 
-function RouteGallery({ imageUrls, alt }) {
+// --- Coordinate-based image lookup. This replaces the old name-text
+// search, which matched on noisy scraped labels and frequently returned
+// images for the wrong place. Geosearch against the real lat/lng is the
+// reliable signal; clean waypoint names are only a fallback. ---
+
+async function fetchJson(url) {
+  try {
+    const response = await fetch(url);
+    return response.ok ? await response.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchWikipediaThumbnails(pageIds) {
+  if (!pageIds.length) return [];
+  const params = new URLSearchParams({
+    action: "query",
+    pageids: pageIds.join("|"),
+    prop: "pageimages",
+    piprop: "thumbnail",
+    pithumbsize: "960",
+    format: "json",
+    origin: "*"
+  });
+  const data = await fetchJson(`https://en.wikipedia.org/w/api.php?${params.toString()}`);
+  const pages = data?.query?.pages || {};
+  return pageIds.map((id) => pages[id]?.thumbnail?.source).filter(Boolean);
+}
+
+async function geosearchWikipediaImages(latitude, longitude, radiusMeters) {
+  const params = new URLSearchParams({
+    action: "query",
+    list: "geosearch",
+    gscoord: `${latitude}|${longitude}`,
+    gsradius: String(radiusMeters),
+    gslimit: "10",
+    format: "json",
+    origin: "*"
+  });
+  const data = await fetchJson(`https://en.wikipedia.org/w/api.php?${params.toString()}`);
+  const results = data?.query?.geosearch || [];
+  if (!results.length) return [];
+  return fetchWikipediaThumbnails(results.map((page) => page.pageid));
+}
+
+async function geosearchCommonsImages(latitude, longitude, radiusMeters) {
+  const searchParams = new URLSearchParams({
+    action: "query",
+    list: "geosearch",
+    gscoord: `${latitude}|${longitude}`,
+    gsradius: String(radiusMeters),
+    gsnamespace: "6",
+    gslimit: "10",
+    format: "json",
+    origin: "*"
+  });
+  const searchData = await fetchJson(`https://commons.wikimedia.org/w/api.php?${searchParams.toString()}`);
+  const results = searchData?.query?.geosearch || [];
+  if (!results.length) return [];
+
+  const imageParams = new URLSearchParams({
+    action: "query",
+    titles: results.map((page) => page.title).join("|"),
+    prop: "imageinfo",
+    iiprop: "url",
+    iiurlwidth: "960",
+    format: "json",
+    origin: "*"
+  });
+  const imageData = await fetchJson(`https://commons.wikimedia.org/w/api.php?${imageParams.toString()}`);
+  const pages = imageData?.query?.pages ? Object.values(imageData.query.pages) : [];
+  return pages
+    .map((page) => page?.imageinfo?.[0])
+    .map((info) => info?.thumburl || info?.url)
+    .filter(Boolean);
+}
+
+async function searchWikipediaImagesByName(searchTerm) {
+  if (!searchTerm) return [];
+  const params = new URLSearchParams({
+    action: "query",
+    generator: "search",
+    gsrsearch: searchTerm,
+    gsrlimit: "5",
+    prop: "pageimages",
+    piprop: "thumbnail",
+    pithumbsize: "960",
+    format: "json",
+    origin: "*"
+  });
+  const data = await fetchJson(`https://en.wikipedia.org/w/api.php?${params.toString()}`);
+  const pages = data?.query?.pages ? Object.values(data.query.pages) : [];
+  return pages.map((page) => page?.thumbnail?.source).filter(Boolean);
+}
+
+async function fetchNearbyPlaceImages(latitude, longitude, fallbackPlaceName) {
+  const hasPoint = isValidCoordinate(latitude, longitude);
+
+  if (hasPoint) {
+    const [wikiResult, commonsResult] = await Promise.allSettled([
+      geosearchWikipediaImages(latitude, longitude, 10000),
+      geosearchCommonsImages(latitude, longitude, 10000)
+    ]);
+    const images = uniqueImageUrls([
+      ...(wikiResult.status === "fulfilled" ? wikiResult.value : []),
+      ...(commonsResult.status === "fulfilled" ? commonsResult.value : [])
+    ]);
+    if (images.length) return images.slice(0, 4);
+  }
+
+  if (fallbackPlaceName) {
+    const images = await searchWikipediaImagesByName(`${fallbackPlaceName} Ethiopia Djibouti`);
+    if (images.length) return uniqueImageUrls(images).slice(0, 4);
+  }
+
+  return [];
+}
+
+function RouteGallery({ imageUrls, alt, latitude, longitude, fallbackPlaceName }) {
   const [inlineIndex, setInlineIndex] = useState(0);
   const [remoteImages, setRemoteImages] = useState([]);
   const [lightboxIndex, setLightboxIndex] = useState(null);
-  const searchName = getWikipediaSearchName(alt);
   const imageSources = uniqueImageUrls([...remoteImages, ...imageUrls]).slice(0, 6);
-  const imageKey = `${searchName}|${imageSources.join("|")}`;
+  const imageKey = `${latitude}|${longitude}|${fallbackPlaceName}|${imageSources.join("|")}`;
 
   useEffect(() => {
     setInlineIndex(0);
@@ -591,65 +748,19 @@ function RouteGallery({ imageUrls, alt }) {
   useEffect(() => {
     let ignore = false;
     setRemoteImages([]);
-    if (!searchName) return () => { ignore = true; };
 
-    async function fetchImages() {
-      const wikiParams = new URLSearchParams({
-        action: "query",
-        generator: "search",
-        gsrsearch: `${searchName} Ethiopia Djibouti`,
-        gsrlimit: "8",
-        prop: "pageimages",
-        piprop: "thumbnail",
-        pithumbsize: "960",
-        format: "json",
-        origin: "*"
+    fetchNearbyPlaceImages(latitude, longitude, fallbackPlaceName)
+      .then((images) => {
+        if (!ignore) setRemoteImages(images);
+      })
+      .catch(() => {
+        if (!ignore) setRemoteImages([]);
       });
-      const commonsParams = new URLSearchParams({
-        action: "query",
-        generator: "search",
-        gsrnamespace: "6",
-        gsrsearch: `${searchName} Ethiopia OR Djibouti`,
-        gsrlimit: "8",
-        prop: "imageinfo",
-        iiprop: "url",
-        iiurlwidth: "960",
-        format: "json",
-        origin: "*"
-      });
-
-      const results = await Promise.allSettled([
-        fetch(`https://en.wikipedia.org/w/api.php?${wikiParams.toString()}`).then((response) => response.ok ? response.json() : null),
-        fetch(`https://commons.wikimedia.org/w/api.php?${commonsParams.toString()}`).then((response) => response.ok ? response.json() : null)
-      ]);
-      if (ignore) return;
-
-      const nextImages = [];
-      const wikiPages = results[0].status === "fulfilled" && results[0].value?.query?.pages
-        ? Object.values(results[0].value.query.pages)
-        : [];
-      wikiPages.forEach((page) => {
-        if (page?.thumbnail?.source) nextImages.push(page.thumbnail.source);
-      });
-
-      const commonsPages = results[1].status === "fulfilled" && results[1].value?.query?.pages
-        ? Object.values(results[1].value.query.pages)
-        : [];
-      commonsPages.forEach((page) => {
-        const imageInfo = page?.imageinfo?.[0];
-        if (imageInfo?.thumburl) nextImages.push(imageInfo.thumburl);
-        else if (imageInfo?.url) nextImages.push(imageInfo.url);
-      });
-
-      setRemoteImages(uniqueImageUrls(nextImages).slice(0, 4));
-    }
-
-    fetchImages().catch(() => {});
 
     return () => {
       ignore = true;
     };
-  }, [searchName]);
+  }, [latitude, longitude, fallbackPlaceName]);
 
   const openLightbox = (index) => setLightboxIndex(index);
   const closeLightbox = () => setLightboxIndex(null);
@@ -909,7 +1020,6 @@ export default function GpsTrackingPanel({ isOpen, onClose, selectedPlate, plate
                 <strong>{routeInsight.placeLabel}</strong>
                 <small>{routeInsight.placeDetail}</small>
               </span>
-              <span className="route-country-chip">{routeInsight.countryLabel}</span>
               <span className="route-summary-stat">
                 <strong>{routeInsight.distanceLeft}</strong>
                 <small>{routeInsight.timeLeft}</small>
@@ -922,7 +1032,13 @@ export default function GpsTrackingPanel({ isOpen, onClose, selectedPlate, plate
             {isRoutePanelExpanded ? (
               <div className="route-sheet-detail">
                 <div className="route-panel-image">
-                  <RouteGallery imageUrls={routeInsight.imageUrls} alt={routeInsight.placeLabel} />
+                  <RouteGallery
+                    imageUrls={routeInsight.imageUrls}
+                    alt={routeInsight.placeLabel}
+                    latitude={routeInsight.latitude}
+                    longitude={routeInsight.longitude}
+                    fallbackPlaceName={routeInsight.nearestPlaceName}
+                  />
                 </div>
 
                 <div className="route-progress">
@@ -955,19 +1071,21 @@ export default function GpsTrackingPanel({ isOpen, onClose, selectedPlate, plate
                     <small>{routeInsight.destination.location}</small>
                   </div>
                 </div>
+                   
+                   <a
+  className={`route-map-link${routeInsight.googleMapsUrl ? "" : " disabled"}`}
+  href={routeInsight.googleMapsUrl || undefined}
+  target="_blank"
+  rel="noreferrer"
+  aria-disabled={!routeInsight.googleMapsUrl}
+  onClick={(event) => {
+    if (!routeInsight.googleMapsUrl) event.preventDefault();
+  }}
+>
+  Open in Google Maps
+</a>
+                
 
-                <a
-                  className={`route-map-link${routeInsight.googleMapsUrl ? "" : " disabled"}`}
-                  href={routeInsight.googleMapsUrl || undefined}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-disabled={!routeInsight.googleMapsUrl}
-                  onClick={(event) => {
-                    if (!routeInsight.googleMapsUrl) event.preventDefault();
-                  }}
-                >
-                  Open in Google Maps
-                </a>
               </div>
             ) : null}
           </aside>
