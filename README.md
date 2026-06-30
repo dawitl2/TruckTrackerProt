@@ -5,9 +5,9 @@
 ### Real-time fuel fleet tracking from Addis Ababa to Doraleh — automated, intelligent, and built for the road.
 
 <p align="center">
-  <img src="screenshot1.png" width="32%" alt="TruckTracker screenshot 1" />
-  <img src="screenshot2.png" width="32%" alt="TruckTracker screenshot 2" />
-  <img src="screenshot3.png" width="32%" alt="TruckTracker screenshot 3" />
+  <img src="Screenshot1.png" width="32%" alt="TruckTracker screenshot 1" />
+  <img src="Screenshot2.png" width="32%" alt="TruckTracker screenshot 2" />
+  <img src="Screenshot3.png" width="32%" alt="TruckTracker screenshot 3" />
 </p>
 
 <p align="center"><i>Live truck status, GPS route intelligence, and payment tracking — all in one place.</i></p>
