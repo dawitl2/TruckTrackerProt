@@ -102,6 +102,26 @@ function normalizePlateValue(value) {
   return String(value || "").trim().replace(/\s+/g, "").toUpperCase();
 }
 
+function compactPlateText(value) {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function findMatchingTargetPlate(value) {
+  const compactCell = compactPlateText(value);
+  if (!compactCell) return null;
+  return (
+    TARGET_LICENSE_PLATES.find((plate) => {
+      const compactPlate = compactPlateText(plate);
+      return compactPlate && (compactCell === compactPlate || compactCell.includes(compactPlate));
+    }) || null
+  );
+}
+
+function pickFallbackCell(cells, usedIndexes) {
+  const index = cells.findIndex((cell, i) => !usedIndexes.has(i) && String(cell ?? "").trim() !== "");
+  return index >= 0 ? index : undefined;
+}
+
 function formatDate(date) {
   return new Intl.DateTimeFormat("en-CA").format(date);
 }
@@ -146,15 +166,18 @@ function toTruckIsoDate(value) {
   return `${year.padStart(4, "0")}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
 }
 
+// Check time format (HH:MM or HH:MM:SS)
 function isTruckTimeLike(value) {
   return /^\d{1,2}:\d{2}(:\d{2})?$/.test(cleanTruckCell(value));
 }
 
+// Lenient matching helper for license plates
 function isTruckPlateLike(value) {
   const plate = normalizePlateValue(value);
-  return TARGET_LICENSE_PLATE_SET.has(plate) || /^[A-Z]?\d{4,6}\/\d{4,6}$/.test(plate);
+  return TARGET_LICENSE_PLATE_SET.has(plate) || findMatchingTargetPlate(value) !== null || /^[A-Z]?\d{4,6}\/\d{4,6}$/.test(plate);
 }
 
+// Match transaction/arrival codes
 function isTruckArrivalCodeLike(value) {
   const text = cleanTruckCell(value);
   if (!text || isTruckDateLike(text) || isTruckTimeLike(text) || isTruckPlateLike(text)) return false;
@@ -194,14 +217,15 @@ function parseTruckArrivalRow(row, arrivalDate, batchTime) {
   const cells = (Array.isArray(row) ? row : []).map(cleanTruckCell);
   if (!cells.some(Boolean)) return null;
 
-  const targetIndex = cells.findIndex((cell) => TARGET_LICENSE_PLATE_SET.has(normalizePlateValue(cell)));
+  const targetIndex = cells.findIndex((cell) => findMatchingTargetPlate(cell) !== null);
   const plateIndex = targetIndex >= 0 ? targetIndex : cells.findIndex(isTruckPlateLike);
   if (plateIndex < 0) return null;
 
+  const matchedTargetPlate = targetIndex >= 0 ? findMatchingTargetPlate(cells[targetIndex]) : null;
+
   const usedIndexes = new Set([plateIndex]);
-  const codeIndex = pickTruckArrivalCodeCell(cells, plateIndex, usedIndexes);
-  if (codeIndex === undefined) return null;
-  usedIndexes.add(codeIndex);
+  let codeIndex = pickTruckArrivalCodeCell(cells, plateIndex, usedIndexes);
+  if (codeIndex !== undefined) usedIndexes.add(codeIndex);
 
   const dateIndex = pickNearbyTruckCell(cells, plateIndex, isTruckDateLike, usedIndexes);
   if (dateIndex !== undefined) usedIndexes.add(dateIndex);
@@ -213,12 +237,18 @@ function parseTruckArrivalRow(row, arrivalDate, batchTime) {
   if (productIndex !== undefined) usedIndexes.add(productIndex);
 
   const companyIndex = pickNearbyTruckCell(cells, plateIndex, looksLikeTruckCompany, usedIndexes);
+  if (companyIndex !== undefined) usedIndexes.add(companyIndex);
+
+  if (codeIndex === undefined) {
+    codeIndex = pickFallbackCell(cells, usedIndexes);
+    if (codeIndex !== undefined) usedIndexes.add(codeIndex);
+  }
 
   return {
     arrival_date: dateIndex !== undefined ? toTruckIsoDate(cells[dateIndex]) || arrivalDate : arrivalDate,
     batch_time: timeIndex !== undefined ? cells[timeIndex].slice(0, 5) : batchTime,
-    license_plate: cells[plateIndex],
-    arrival_code: cells[codeIndex],
+    license_plate: matchedTargetPlate || cells[plateIndex],
+    arrival_code: codeIndex !== undefined ? cells[codeIndex] : "",
     product_type: productIndex !== undefined ? cells[productIndex] : null,
     company: companyIndex !== undefined ? cells[companyIndex] : null
   };
@@ -943,26 +973,45 @@ app.post("/api/import", upload.any(), async (req, res) => {
     }
 
     const workbook = readWorkbookFromFile(file);
-    const sheetName = workbook.SheetNames[0];
-
-    if (!sheetName) {
+    if (!workbook.SheetNames || !workbook.SheetNames.length) {
       return res.redirect(302, "/?from=shortcut&status=error");
     }
-
-    const worksheet = workbook.Sheets[sheetName];
-    const matrix = xlsx.utils.sheet_to_json(worksheet, {
-      header: 1,
-      defval: "",
-      raw: false
-    });
 
     const now = new Date();
     const arrivalDate = formatDate(now);
     const batchTime = formatTime(now);
 
-    const targetRows = matrix
-      .map((row) => parseTruckArrivalRow(row, arrivalDate, batchTime))
-      .filter((row) => row && TARGET_LICENSE_PLATE_SET.has(normalizePlateValue(row.license_plate)));
+    const allRows = [];
+    workbook.SheetNames.forEach((sheetName) => {
+      const worksheet = workbook.Sheets[sheetName];
+      if (!worksheet) return;
+      const matrix = xlsx.utils.sheet_to_json(worksheet, {
+        header: 1,
+        defval: "",
+        raw: false
+      });
+      if (!matrix.length) return;
+
+      const rows = matrix
+        .map((row) => parseTruckArrivalRow(row, arrivalDate, batchTime))
+        .filter(Boolean);
+
+      allRows.push(...rows);
+    });
+
+    const targetRows = TARGET_LICENSE_PLATES.flatMap((plate) => {
+      const targetPlate = normalizePlateValue(plate);
+      return allRows
+        .filter((row) => normalizePlateValue(row.license_plate) === targetPlate)
+        .map((row) => ({
+          arrival_date: row.arrival_date,
+          batch_time: row.batch_time,
+          license_plate: targetPlate,
+          arrival_code: row.arrival_code,
+          product_type: row.product_type || null,
+          company: row.company || null
+        }));
+    });
 
     if (!targetRows.length) {
       return res.redirect(302, "/?from=shortcut&status=not_found");
@@ -1005,5 +1054,5 @@ app.listen(PORT, () => {
   if (!supabase) {
     console.log("Supabase env vars are missing. Running with in-memory storage.");
   }
-  startKeepAlive();
+  // startKeepAlive();
 });

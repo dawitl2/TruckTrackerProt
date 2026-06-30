@@ -10,6 +10,26 @@ function normalizePlate(value) {
   return String(value || "").trim().replace(/\s+/g, "").toUpperCase();
 }
 
+function compactPlateText(value) {
+  return String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function findMatchingTargetPlate(value) {
+  const compactCell = compactPlateText(value);
+  if (!compactCell) return null;
+  return (
+    TARGET_LICENSE_PLATES.find((plate) => {
+      const compactPlate = compactPlateText(plate);
+      return compactPlate && (compactCell === compactPlate || compactCell.includes(compactPlate));
+    }) || null
+  );
+}
+
+function pickFallbackCell(cells, usedIndexes) {
+  const index = cells.findIndex((cell, i) => !usedIndexes.has(i) && String(cell ?? "").trim() !== "");
+  return index >= 0 ? index : undefined;
+}
+
 function formatDate(date) {
   return new Intl.DateTimeFormat("en-CA").format(date);
 }
@@ -60,7 +80,7 @@ function isTimeLike(value) {
 
 function isPlateLike(value) {
   const plate = normalizePlate(value);
-  return TARGET_LICENSE_PLATE_SET.has(plate) || /^[A-Z]?\d{4,6}\/\d{4,6}$/.test(plate);
+  return TARGET_LICENSE_PLATE_SET.has(plate) || findMatchingTargetPlate(value) !== null || /^[A-Z]?\d{4,6}\/\d{4,6}$/.test(plate);
 }
 
 function isArrivalCodeLike(value) {
@@ -102,14 +122,15 @@ function parseArrivalRow(row, arrivalDate, batchTime) {
   const cells = (Array.isArray(row) ? row : []).map(cleanCell);
   if (!cells.some(Boolean)) return null;
 
-  const targetIndex = cells.findIndex((cell) => TARGET_LICENSE_PLATE_SET.has(normalizePlate(cell)));
+  const targetIndex = cells.findIndex((cell) => findMatchingTargetPlate(cell) !== null);
   const plateIndex = targetIndex >= 0 ? targetIndex : cells.findIndex(isPlateLike);
   if (plateIndex < 0) return null;
 
+  const matchedTargetPlate = targetIndex >= 0 ? findMatchingTargetPlate(cells[targetIndex]) : null;
+
   const usedIndexes = new Set([plateIndex]);
-  const codeIndex = pickArrivalCodeCell(cells, plateIndex, usedIndexes);
-  if (codeIndex === undefined) return null;
-  usedIndexes.add(codeIndex);
+  let codeIndex = pickArrivalCodeCell(cells, plateIndex, usedIndexes);
+  if (codeIndex !== undefined) usedIndexes.add(codeIndex);
 
   const dateIndex = pickNearbyCell(cells, plateIndex, isDateLike, usedIndexes);
   if (dateIndex !== undefined) usedIndexes.add(dateIndex);
@@ -121,12 +142,18 @@ function parseArrivalRow(row, arrivalDate, batchTime) {
   if (productIndex !== undefined) usedIndexes.add(productIndex);
 
   const companyIndex = pickNearbyCell(cells, plateIndex, looksLikeCompany, usedIndexes);
+  if (companyIndex !== undefined) usedIndexes.add(companyIndex);
+
+  if (codeIndex === undefined) {
+    codeIndex = pickFallbackCell(cells, usedIndexes);
+    if (codeIndex !== undefined) usedIndexes.add(codeIndex);
+  }
 
   return {
     arrival_date: dateIndex !== undefined ? toIsoDate(cells[dateIndex]) || arrivalDate : arrivalDate,
     batch_time: timeIndex !== undefined ? cells[timeIndex].slice(0, 5) : batchTime,
-    license_plate: cells[plateIndex],
-    arrival_code: cells[codeIndex],
+    license_plate: matchedTargetPlate || cells[plateIndex],
+    arrival_code: codeIndex !== undefined ? cells[codeIndex] : "",
     product_type: productIndex !== undefined ? cells[productIndex] : null,
     company: companyIndex !== undefined ? cells[companyIndex] : null,
   };
@@ -173,16 +200,41 @@ export default async function handler(req, res) {
     return res.redirect(302, "/?from=shortcut&status=error");
   }
 
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
+  if (!workbook.SheetNames || !workbook.SheetNames.length) {
+    return res.redirect(302, "/?from=shortcut&status=error");
+  }
 
   const now = new Date();
   const arrival_date = formatDate(now);
   const batch_time = formatTime(now);
 
-  const targetRows = matrix
-    .map((row) => parseArrivalRow(row, arrival_date, batch_time))
-    .filter((row) => row && TARGET_LICENSE_PLATE_SET.has(normalizePlate(row.license_plate)));
+  const allRows = [];
+  workbook.SheetNames.forEach((sheetName) => {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) return;
+    const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
+    if (!matrix.length) return;
+
+    const rows = matrix
+      .map((row) => parseArrivalRow(row, arrival_date, batch_time))
+      .filter(Boolean);
+
+    allRows.push(...rows);
+  });
+
+  const targetRows = TARGET_LICENSE_PLATES.flatMap((plate) => {
+    const targetPlate = normalizePlate(plate);
+    return allRows
+      .filter((row) => normalizePlate(row.license_plate) === targetPlate)
+      .map((row) => ({
+        arrival_date: row.arrival_date,
+        batch_time: row.batch_time,
+        license_plate: targetPlate,
+        arrival_code: row.arrival_code,
+        product_type: row.product_type || null,
+        company: row.company || null,
+      }));
+  });
 
   if (!targetRows.length) {
     return res.redirect(302, "/?from=shortcut&status=not_found");
